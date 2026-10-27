@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleExecutable</key>
+	<string>Unseen</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.hexyans.unseen</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Unseen</string>
+	<key>CFBundleDisplayName</key>
+	<string>Unseen</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.26</string>
+	<key>CFBundleVersion</key>
+	<string>24</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<!--
+	  Deliberately NOT LSUIElement: the app launches as a normal foreground app
+	  with a Dock icon. If the user turns off "在 Dock 中显示", the runtime calls
+	  setActivationPolicy(.accessory) instead.
+	-->
+	<key>LSUIElement</key>
+	<false/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Hex Yans</string>
+	<key>NSCameraUsageDescription</key>
+	<string>录屏时把摄像头画面作为画中画显示在屏幕角落。不录屏时只有你手动开启才会使用摄像头。</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+</dict>
+</plist>
