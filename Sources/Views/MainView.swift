@@ -41,30 +41,44 @@ struct MainView: View {
     @FocusState private var searchFocused: Bool
 
     var body: some View {
+        // Read both appearance inputs from the observable settings **here**, so
+        // one change re-renders the whole window: the `preferredColorScheme`
+        // modifier and every column card are recreated with the new tier.
+        //
+        // The cards are AppKit-backed (`GlassSurfaceRepresentable`), and a
+        // representable only receives `updateNSView` when SwiftUI has something
+        // new to hand it. Reading the tier from a global inside the AppKit
+        // backdrop worked for the columns whose subtree happened to re-render,
+        // and left the others painted for the previous tier — that was the
+        // "left column looks different after switching theme" report. Passing
+        // it in as a value gives all three columns the same update path.
+        let backgroundStyle = model.settings.backgroundStyleValue
+        let colorScheme = model.settings.preferredColorScheme
+
         HStack(spacing: MainColumnMetrics.gutter) {
             navColumn
                 .frame(width: MainColumnMetrics.navigation)
-                .floatingCard()
+                .floatingCard(backgroundStyle: backgroundStyle)
             // One middle width for every section (see `MainColumnMetrics`).
             // The *contents* still differ — a clip list, the 截图 mode list or
             // a page's group list — but the card never changes size, so the
             // three-column boundary is identical on every page.
             middleColumn
                 .frame(width: MainColumnMetrics.middle)
-                .floatingCard()
+                .floatingCard(backgroundStyle: backgroundStyle)
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .floatingCard()
+                .floatingCard(backgroundStyle: backgroundStyle)
         }
         .padding(MainColumnMetrics.outerPadding)
         // Full-bleed: with `fullSizeContentView` the SwiftUI content starts
         // below the titlebar, so the backdrop must ignore the safe area or the
         // glass would stop short and leave a square-cornered top edge.
         .background {
-            AppBackground(style: model.settings.backgroundStyleValue)
+            AppBackground(style: backgroundStyle)
                 .ignoresSafeArea()
         }
-        .preferredColorScheme(AppearanceRuntime.colorScheme)
+        .preferredColorScheme(colorScheme)
     }
 
     /// The middle column's contents. History and pins list their items;
@@ -575,8 +589,18 @@ extension View {
     ///
     /// Three large surfaces use this (left navigation, middle list, right
     /// detail). On macOS 26 they become Liquid Glass; on 14/15 a blur; under
-    /// 纯色 they turn into opaque cards so the layout never goes see-through.
-    func floatingCard(cornerRadius: CGFloat = 12) -> some View {
+    /// 实色 they turn into opaque cards so the layout never goes see-through.
+    ///
+    /// - Parameter backgroundStyle: the 外观 → 风格 tier, handed in by
+    ///   `MainView` from the observable settings. Every column must receive it
+    ///   as a *value*: the AppKit backdrop can only rebuild when SwiftUI pushes
+    ///   a new `updateNSView`, and a tier read from a global inside the
+    ///   backdrop leaves whichever column did not re-render on the old
+    ///   material. One input, three cards, one update path.
+    func floatingCard(
+        backgroundStyle: AppBackgroundStyle,
+        cornerRadius: CGFloat = 12
+    ) -> some View {
         self
             .background {
                 GlassSurface(
@@ -597,6 +621,7 @@ extension View {
                     // fill is close to the window.
                     fillOpacity: GlassWash.card,
                     plateStyle: .columnDepth,
+                    backgroundStyle: backgroundStyle,
                     borderColor: Color.primary.opacity(0.10)
                 )
             }
