@@ -9,7 +9,7 @@ macOS 截图 · 长截图 · 录屏 · 剪贴板历史
 
 <sub>作者 Hex Yans · macOS 14+ · 通用二进制</sub>
 
-![image-20261029193027316](/Users/Hex/Library/Application Support/typora-user-images/image-20261029193027316.png)
+![设置页截图](https://cdn.nodeimage.com/i/ZijuxXMnOE1iIKilggVNLVSF4hOG2wyr.webp)
 
 ---
 
