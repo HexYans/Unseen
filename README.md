@@ -7,7 +7,7 @@ macOS 截图 · 长截图 · 录屏 · 剪贴板历史
 
 <sub>作者 Hex Yans · macOS 14+ · 通用二进制</sub>
 
-<p align="center"><img src="https://cdn.nodeimage.com/i/ZijuxXMnOE1iIKilggVNLVSF4hOG2wyr.webp" alt="设置页截图" style="zoom: 25%;" /></p>
+<p align="center"><img src="https://cdn.nodeimage.com/i/ZijuxXMnOE1iIKilggVNLVSF4hOG2wyr.webp" alt="设置页截图" width="600" /></p>
 
 ---
 
