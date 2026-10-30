@@ -1,5 +1,3 @@
-<div align="center">
-
 # Unseen
 
 **截图这件事，最好让你感觉不到它存在。**
@@ -9,7 +7,7 @@ macOS 截图 · 长截图 · 录屏 · 剪贴板历史
 
 <sub>作者 Hex Yans · macOS 14+ · 通用二进制</sub>
 
-<img src="https://cdn.nodeimage.com/i/ZijuxXMnOE1iIKilggVNLVSF4hOG2wyr.webp" alt="设置页截图" style="zoom: 25%;" />
+<p align="center"><img src="https://cdn.nodeimage.com/i/ZijuxXMnOE1iIKilggVNLVSF4hOG2wyr.webp" alt="设置页截图" style="zoom: 25%;" /></p>
 
 ---
 
@@ -160,10 +158,4 @@ OCR / 取色 / 按键显示 / 套壳 等工具默认留空，为您的定制化�
 
 ---
 
-
-
----
-
-<div align="center">
 <sub>写给自己用的工具，顺手开源。<br>有问题开 issue，带上 macOS 版本和复现步骤。</sub>
-</div>
