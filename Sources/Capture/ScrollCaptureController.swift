@@ -1141,14 +1141,15 @@ final class ScrollCaptureController {
 
     /// Shrink `region` to the rows that actually scroll, then start the stitch
     /// over. Called once per session, as soon as two frames exist to compare.
-    private func trimBandsIfNeeded(reference: CGImage, current: CGImage) {
-        guard !didTrimBands else { return }
+    @discardableResult
+    private func trimBandsIfNeeded(reference: CGImage, current: CGImage) -> Bool {
+        guard !didTrimBands else { return false }
         didTrimBands = true
         bandReference = nil
         guard let a = ScrollStitcher.SampledRaster(reference),
-              let b = ScrollStitcher.SampledRaster(current) else { return }
+              let b = ScrollStitcher.SampledRaster(current) else { return false }
         let insets = Self.detectBandInsets(existing: a, next: b)
-        guard insets.top > 0 || insets.bottom > 0 else { return }
+        guard insets.top > 0 || insets.bottom > 0 else { return false }
 
         // Pixels → points, through the width ratio (the capture is at the
         // screen's backing scale, so both axes share it).
@@ -1166,7 +1167,7 @@ final class ScrollCaptureController {
                 "scroll: bands top=\(insets.top) bottom=\(insets.bottom) px rejected "
                     + "(would leave \(trimmed.height) pt)"
             )
-            return
+            return false
         }
         region = trimmed
         // A new region means the accumulated rows were captured from a different
@@ -1187,6 +1188,7 @@ final class ScrollCaptureController {
             "scroll: trimmed pinned bands top=\(insets.top)px bottom=\(insets.bottom)px "
                 + "→ region=\(NSStringFromRect(trimmed))"
         )
+        return true
     }
 
     private func captureFrame() async {
@@ -1219,14 +1221,22 @@ final class ScrollCaptureController {
             // and shrink the region to the scrolling body. Doing it before the
             // stitch accumulates anything keeps the output free of repeated
             // title/tab/status bars.
+            var trimmedThisPass = false
             if !didTrimBands {
                 if let reference = bandReference {
-                    trimBandsIfNeeded(reference: reference, current: shot.image)
+                    trimmedThisPass = trimBandsIfNeeded(
+                        reference: reference,
+                        current: shot.image
+                    )
                 } else {
                     bandReference = shot.image
                 }
             }
             guard isRunning else { return }
+            // A trim reset the stitch, so this frame's step describes the *old*
+            // region: recording it would report rows that no longer exist and
+            // mark the page as grown from a box that was just thrown away.
+            guard !trimmedThisPass else { return }
             record(step)
             onFrame?(shot.image, step.outcome, step.lastOverlap)
             onUpdate?(step.frame, step.grew, isAutoScrolling)
