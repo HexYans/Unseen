@@ -253,6 +253,47 @@ final class Database: @unchecked Sendable {
 
     // MARK: - Reads
 
+    /// One row by id, regardless of the retention window.
+    ///
+    /// 相册 points at history rows by id, and its grid must be able to draw a
+    /// tile even when that row has scrolled out of the newest-N window the list
+    /// loads. Returns nil when the row no longer exists at all.
+    func item(id: Int64) throws -> ClipItem? {
+        try queue.sync {
+            let sql = """
+            SELECT id, kind, text, fileURLs, hasImage, byteCount,
+                   createdAt, updatedAt, sourceApp, bundleID, pinned, copyCount
+            FROM items
+            WHERE id = ?
+            LIMIT 1;
+            """
+            let statement = try prepare(sql)
+            defer { sqlite3_finalize(statement) }
+            bind(statement, 1, id)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            let fileURLs: [String]
+            if let encoded = string(statement, 3), let data = encoded.data(using: .utf8) {
+                fileURLs = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+            } else {
+                fileURLs = []
+            }
+            return ClipItem(
+                id: sqlite3_column_int64(statement, 0),
+                kind: ClipKind(rawValue: string(statement, 1) ?? "") ?? .text,
+                text: string(statement, 2),
+                fileURLs: fileURLs,
+                hasImage: sqlite3_column_int64(statement, 4) != 0,
+                byteCount: Int(sqlite3_column_int64(statement, 5)),
+                createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6)),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 7)),
+                sourceApp: string(statement, 8),
+                bundleID: string(statement, 9),
+                pinned: sqlite3_column_int64(statement, 10) != 0,
+                copyCount: Int(sqlite3_column_int64(statement, 11))
+            )
+        }
+    }
+
     func fetch(limit: Int = 500, retentionDays: Int = 0, now: Date = Date()) throws -> [ClipItem] {
         try queue.sync {
             let cutoff = retentionDays > 0

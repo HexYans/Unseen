@@ -1,22 +1,36 @@
 import AppKit
 import SwiftUI
 
-/// 相册 — the screenshot library.
+/// 相册 — the screenshot library, drawn in the app's ordinary three-column
+/// language instead of as one long scrolling page.
 ///
-/// Deliberately a *grid*, not the grouped-rows language the settings pages use:
-/// the whole point of an album is to see pictures. Every tile is a real history
-/// row, so clicking one selects it in 历史记录 and the standard preview pane
-/// (copy / pin / ⌘1–9) keeps working; the album only adds the folder-derived
-/// provenance line and its own delete.
+/// The middle column lists this page's groups (图片库 / 文件夹监听 / 导入行为) and
+/// the right pane draws the selected one, exactly like every settings page. That
+/// replaced a second 设置 → 相册 entry point: there is now **one** album page, and
+/// the folder switches live inside it rather than in two places.
 struct AlbumPage: View {
     @Bindable var model: AppModel
+    @Binding var groupID: String
     @State private var selection: UUID?
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
 
     var body: some View {
+        Group {
+            switch groupID {
+            case AlbumPageGroup.folder: folderPane
+            case AlbumPageGroup.behavior: behaviorPane
+            default: libraryPane
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    // MARK: - 图片库
+
+    private var libraryPane: some View {
         let entries = model.albumItems
-        ScrollView {
+        return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header(count: entries.count)
 
@@ -50,20 +64,17 @@ struct AlbumPage: View {
                         }
                     }
                 }
-
-                watcherCard
             }
             .padding(.horizontal, 22)
-            .padding(.top, 4)
+            .padding(.top, SettingsPageMetrics.headerTopPadding)
             .padding(.bottom, 28)
+            .frame(maxWidth: 900, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
-    // MARK: - Header
-
     private func header(count: Int) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: SettingsPageMetrics.headerTitleSpacing) {
             Text("相册")
                 .font(.system(size: 26, weight: .bold))
             Text(
@@ -76,12 +87,9 @@ struct AlbumPage: View {
         }
     }
 
-    // MARK: - Empty state
-
-    /// When nothing has been collected yet, this is the only thing on the page,
-    /// so it explains both ways in *and* carries the folder switches: a user who
-    /// has never turned the feature on should be able to do it right here
-    /// instead of hunting through 设置 → 相册.
+    /// Nothing collected yet: this pane is the whole page, so it has to explain
+    /// both ways in and offer the folder switch instead of sending the user off
+    /// to another page.
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 0) {
             GroupHeader("怎么把图片放进来")
@@ -92,8 +100,12 @@ struct AlbumPage: View {
                     title: "监听一个文件夹",
                     subtitle: model.settings.autoImportEnabled
                         ? "已开启：新截图会自动收进相册"
-                        : "在下方开启后，保存到该文件夹的截图会自动进来"
-                )
+                        : "在「文件夹监听」里选择文件夹并开启"
+                ) {
+                    NeutralCapsuleButton(title: "去设置", help: "打开本页的「文件夹监听」") {
+                        groupID = AlbumPageGroup.folder
+                    }
+                }
                 GroupDivider()
                 GroupRow(
                     symbol: "clock.arrow.circlepath",
@@ -105,17 +117,10 @@ struct AlbumPage: View {
         }
     }
 
-    // MARK: - Folder watching (the switches live here as well as in 设置 → 相册)
+    // MARK: - 文件夹监听
 
-    /// The folder-watching controls, inline on the album page.
-    ///
-    /// These are the *same* `AppSettings` switches the 设置 → 相册 page edits —
-    /// one source of truth, two doors. The album page is where a user actually
-    /// notices "nothing is being collected", so making them come back through
-    /// 设置 to fix it would be a gratuitous detour.
-    private var watcherCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            GroupHeader("文件夹监听")
+    private var folderPane: some View {
+        page("选一个文件夹，之后保存进去的截图会自动进入相册。") {
             GroupSlab(
                 footer: "只认图片文件（png / jpg / heic 等）。开启的那一刻，文件夹里已有的图片不会被导入。"
             ) {
@@ -127,11 +132,15 @@ struct AlbumPage: View {
                         ? "还没有选择"
                         : (model.settings.watchedFolderPath as NSString).abbreviatingWithTildeInPath
                 ) {
-                    NeutralCapsuleButton(
-                        title: "选择…",
-                        help: "选择截图保存到的文件夹"
-                    ) {
-                        chooseWatchedFolder()
+                    HStack(spacing: 6) {
+                        if !model.settings.watchedFolderPath.isEmpty {
+                            NeutralCapsuleButton(title: "扫描", help: "立刻扫描一次，不用等下一次轮询") {
+                                model.folderWatcher.scanNow()
+                            }
+                        }
+                        NeutralCapsuleButton(title: "选择…", help: "选择要监听的文件夹") {
+                            chooseWatchedFolder()
+                        }
                     }
                 }
 
@@ -142,7 +151,7 @@ struct AlbumPage: View {
                     color: model.settings.autoImportEnabled ? .green : .gray,
                     title: "开启监听",
                     subtitle: model.settings.autoImportEnabled
-                        ? watcherSubtitle
+                        ? watcherStatusText
                         : "关闭时不会读取任何文件"
                 ) {
                     toggle(Binding(
@@ -165,9 +174,25 @@ struct AlbumPage: View {
                     ))
                 }
             }
+        }
+    }
 
-            GroupHeader("导入行为")
-                .padding(.top, 14)
+    private var watcherStatusText: String {
+        let watcher = model.folderWatcher
+        if let error = watcher.lastError { return "出错：\(error)" }
+        guard watcher.isWatching else {
+            return model.settings.watchedFolderPath.isEmpty ? "先选择一个文件夹" : "未在监听"
+        }
+        var parts = ["监听中"]
+        if let name = watcher.lastImportedName { parts.append("最近 \(name)") }
+        parts.append("本次已导入 \(watcher.importedCount) 张")
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: - 导入行为
+
+    private var behaviorPane: some View {
+        page("导入之后怎么处理文件。") {
             GroupSlab(footer: "「保留原文件」关闭时，文件会在成功导入之后才删除；导入失败绝不会删文件。") {
                 GroupRow(
                     symbol: "doc.badge.plus",
@@ -216,28 +241,40 @@ struct AlbumPage: View {
         }
     }
 
-    private var watcherSubtitle: String {
-        let watcher = model.folderWatcher
-        if let error = watcher.lastError { return "出错：\(error)" }
-        if !model.settings.watchedFolderPath.isEmpty && !watcher.isWatching {
-            return "未在监听"
+    // MARK: - Shared bits
+
+    /// One right-pane page: big title + scrolling groups, with the same metrics
+    /// every settings page uses so 相册 does not look like a different app.
+    private func page<Content: View>(
+        _ subtitle: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: SettingsPageMetrics.sectionSpacing) {
+                VStack(alignment: .leading, spacing: SettingsPageMetrics.headerTitleSpacing) {
+                    Text("相册")
+                        .font(.system(size: 26, weight: .bold))
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                content()
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, SettingsPageMetrics.headerTopPadding)
+            .padding(.bottom, 24)
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        var parts = ["监听中"]
-        if let name = watcher.lastImportedName { parts.append("最近 \(name)") }
-        parts.append("本次已导入 \(watcher.importedCount) 张")
-        return parts.joined(separator: " · ")
     }
 
-    /// Trailing switch, same style every settings row uses.
     private func toggle(_ isOn: Binding<Bool>) -> some View {
         Toggle("", isOn: isOn)
             .labelsHidden()
             .toggleStyle(NeutralSwitchStyle())
     }
 
-    /// Picking a folder implies intent, so arm the watcher in the same click —
-    /// otherwise the user chooses a folder and nothing happens until they also
-    /// find the 开启监听 row.
+    /// Picking a folder implies intent, so arm the watcher in the same click.
     private func chooseWatchedFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false

@@ -9710,8 +9710,8 @@ enum OverlaySelfTest {
             "title=\(NavItem.capture.title)"
         )
         check(
-            "settings: the 系统 section reads 通用 / 快捷键 / 外观 / 用量 / 隐私 / 存储 / 相册",
-            system == [.general, .hotkeys, .appearance, .usage, .privacy, .storage, .albumSettings],
+            "settings: the 系统 section reads 通用 / 快捷键 / 外观 / 用量 / 隐私 / 存储",
+            system == [.general, .hotkeys, .appearance, .usage, .privacy, .storage],
             "items=\(system.map(\.rawValue))"
         )
         // 2026-10: 快捷键 was promoted from a group inside 通用 to a
@@ -9814,8 +9814,8 @@ enum OverlaySelfTest {
 
         print("[settings] --- middle-column page groups ---")
         check(
-            "settings: there are eighteen settings pages (17 + 相册)",
-            SettingsSection.allCases.count == 18,
+            "settings: there are seventeen settings pages (相册 is a page, not a settings page)",
+            SettingsSection.allCases.count == 17,
             "count=\(SettingsSection.allCases.count)"
         )
         check(
@@ -13639,8 +13639,18 @@ enum OverlaySelfTest {
         // import succeeded.
         settings.autoImportKeepOriginal = false
         model.folderWatcher.restart(watching: watched.path)   // baseline resets
+        // Different bytes from shot-new: the history table de-dupes by content
+        // hash, so reusing the same PNG would collapse the second import into
+        // the first row and the counts below would be meaningless.
+        let secondImage = NSImage(size: NSSize(width: 90, height: 140))
+        secondImage.lockFocus()
+        NSColor.systemTeal.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 90, height: 140)).fill()
+        secondImage.unlockFocus()
+        let secondPNG = secondImage.tiffRepresentation
+            .flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) } ?? png
         let fileMove = watched.appendingPathComponent("shot-move.png")
-        try? png.write(to: fileMove)
+        try? secondPNG.write(to: fileMove)
         model.folderWatcher.scanNow()
         check(
             "album: 保留原文件=off removes the source after a successful import",
@@ -13687,6 +13697,42 @@ enum OverlaySelfTest {
             "album: stopping the watcher disarms it",
             model.folderWatcher.isWatching == false,
             "watching=\(model.folderWatcher.isWatching)"
+        )
+
+        // The manual path: 历史记录 → 右键 → 加入相册 must both write the record
+        // and leave it *visible* in the grid. The grid resolves records against
+        // loaded history rows, so a record whose row cannot be found renders as
+        // nothing — that was the "加了但相册还是空的" report.
+        model.reload()
+        if let firstImage = model.items.first(where: { $0.hasImage && !model.isInAlbum($0) }) {
+            let before = model.albumItems.count
+            let added = model.addToAlbum(firstImage)
+            let visible = model.albumItems.contains { $0.record.itemID == firstImage.id }
+            check(
+                "album: 加入相册 writes the record and the grid can resolve it",
+                added && visible && model.albumItems.count == before + 1,
+                "added=\(added) visible=\(visible) "
+                    + "before=\(before) after=\(model.albumItems.count)"
+            )
+            let inAlbumAgain = model.addToAlbum(firstImage)
+            check(
+                "album: adding the same row twice is a no-op, not a failure",
+                inAlbumAgain && model.albumItems.filter { $0.record.itemID == firstImage.id }.count == 1,
+                "again=\(inAlbumAgain) count=\(model.albumItems.filter { $0.record.itemID == firstImage.id }.count)"
+            )
+        } else {
+            check("album: 加入相册 has an image row to test with", false, "no un-albumed image row")
+        }
+
+        // 相册 is a content page with its own groups — not a settings page. If it
+        // were one, `SettingsSection.allCases` would grow and the settings
+        // sidebar would gain a duplicate 相册 row.
+        check(
+            "album: the page has its own three groups and is not a settings page",
+            AlbumPageGroup.all.map(\.title) == ["图片库", "文件夹监听", "导入行为"]
+                && !SettingsSection.allCases.contains { $0.rawValue == "album" },
+            "groups=\(AlbumPageGroup.all.map(\.title)) "
+                + "settings=\(SettingsSection.allCases.count)"
         )
     }
 

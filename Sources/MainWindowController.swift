@@ -15,10 +15,6 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
     case annotation
     // 系统 section.
     case general, hotkeys, appearance, usage, privacy, storage
-    // 相册 settings page. The left column's 相册 row is the album itself, so
-    // this page has a distinct raw value ("albumSettings") to keep
-    // `settingsSection` from mapping the album row onto a settings page.
-    case albumSettings
 
     var id: String { rawValue }
 
@@ -45,7 +41,6 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case .usage: "用量"
         case .privacy: "隐私"
         case .storage: "存储"
-        case .albumSettings: "相册"
         }
     }
 
@@ -72,18 +67,14 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case .usage: "chart.bar"
         case .privacy: "hand.raised"
         case .storage: "internaldrive"
-        case .albumSettings: "photo.on.rectangle.angled"
         }
     }
 
     /// Settings pages share their raw value with `SettingsSection`.
     ///
-    /// `albumSettings` is the one exception: its raw value cannot be `album`,
-    /// because that is the left column's album row (a content page, not a
-    /// settings page), so the mapping is explicit.
-    var settingsSection: SettingsSection? {
-        self == .albumSettings ? .album : SettingsSection(rawValue: rawValue)
-    }
+    /// 相册 is both: its left-column row *is* the album page, and that page's
+    /// middle column lists its own groups — so `album` maps straight through.
+    var settingsSection: SettingsSection? { SettingsSection(rawValue: rawValue) }
 
     /// Used when the colour palette is switched on.
     var color: Color {
@@ -95,7 +86,7 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
              .fullScreenCapture, .scrollCapture, .recording, .ocr,
              .colorPicker, .keyDisplay, .camera, .annotation:
             SectionPalette.capture
-        case .general, .hotkeys, .appearance, .usage, .privacy, .storage, .albumSettings:
+        case .general, .hotkeys, .appearance, .usage, .privacy, .storage:
             SectionPalette.settings
         }
     }
@@ -111,7 +102,7 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
     static let groups: [(String, [NavItem])] = [
         ("截图", [.capture, .scrollCapture, .recording]),
         ("工具", [.ocr, .colorPicker, .keyDisplay, .camera, .annotation]),
-        ("系统", [.general, .hotkeys, .appearance, .usage, .privacy, .storage, .albumSettings]),
+        ("系统", [.general, .hotkeys, .appearance, .usage, .privacy, .storage]),
         ("资料库", [.history, .pins, .album])
     ]
 }
@@ -281,9 +272,6 @@ enum PageGroupID {
     static let storageRetention = "storage-retention"
     static let storageDatabase = "storage-database"
 
-    // 系统 → 相册
-    static let albumFolder = "album-folder"
-    static let albumBehavior = "album-behavior"
 }
 
 @MainActor
@@ -309,7 +297,8 @@ final class NavigationState {
     /// that have no middle column).
     private static func firstGroupID(for item: NavItem) -> String {
         switch item {
-        case .history, .pins, .album, .capture: return PageGroupID.none
+        case .history, .pins, .capture: return PageGroupID.none
+        case .album: return AlbumPageGroup.defaultGroup
         default: return item.settingsSection?.pageGroups.first?.id ?? PageGroupID.none
         }
     }
@@ -350,24 +339,12 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case scrollCapture, recording, ocr, colorPicker, keyDisplay, camera
     case annotation
     case general, hotkeys, appearance, usage, privacy, storage
-    // 相册 settings page. The left column's 相册 row is the album *content*
-    // page, so this settings page needs its own raw value ("albumSettings");
-    // `NavItem.settingsSection` maps that case to `.album` explicitly.
-    case album
 
     var id: String { rawValue }
 
-    var title: String {
-        // `album` has no `NavItem` case of its own (the left column's 相册 row
-        // is a content page, see `NavItem.settingsSection`).
-        self == .album ? "相册" : (NavItem(rawValue: rawValue)?.title ?? rawValue)
-    }
+    var title: String { NavItem(rawValue: rawValue)?.title ?? rawValue }
 
-    var symbol: String {
-        self == .album
-            ? "photo.on.rectangle.angled"
-            : (NavItem(rawValue: rawValue)?.symbol ?? "gearshape")
-    }
+    var symbol: String { NavItem(rawValue: rawValue)?.symbol ?? "gearshape" }
 
     /// The groups this page is divided into, in drawing order. The middle
     /// column lists exactly these names, and `SettingsView` draws exactly one
@@ -472,13 +449,30 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
                 PageGroup(id: PageGroupID.storageRetention, title: "保留策略", symbol: "clock.arrow.circlepath"),
                 PageGroup(id: PageGroupID.storageDatabase, title: "数据库", symbol: "internaldrive")
             ]
-        case .album:
-            [
-                PageGroup(id: PageGroupID.albumFolder, title: "文件夹监听", symbol: "folder.badge.plus"),
-                PageGroup(id: PageGroupID.albumBehavior, title: "导入行为", symbol: "slider.horizontal.3")
-            ]
         }
     }
+}
+
+/// 相册's middle-column groups.
+///
+/// Deliberately *not* a `SettingsSection`: the album is a content page (its left
+/// column row opens the picture library), not a settings page, so it declares
+/// its own groups instead of pretending to be one more tab in 设置. This is what
+/// keeps `SettingsSection.allCases` — and every "N settings pages" invariant —
+/// honest.
+enum AlbumPageGroup {
+    static let library = "album-library"
+    static let folder = "album-folder"
+    static let behavior = "album-behavior"
+
+    /// Drawing order in the middle column, and the ids the right pane switches on.
+    static let all: [PageGroup] = [
+        PageGroup(id: library, title: "图片库", symbol: "photo.on.rectangle.angled"),
+        PageGroup(id: folder, title: "文件夹监听", symbol: "folder.badge.plus"),
+        PageGroup(id: behavior, title: "导入行为", symbol: "slider.horizontal.3")
+    ]
+
+    static var defaultGroup: String { library }
 }
 
 /// The window's four-corner chrome.

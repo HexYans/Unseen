@@ -90,9 +90,9 @@ struct MainView: View {
     private var middleColumn: some View {
         switch navigation.section {
         case .history, .pins: contentColumn
-        // 相册 has no list column: the grid *is* the content, so the middle
-        // column steps aside and the grid takes its place.
-        case .album: EmptyView()
+        // 相册 uses the ordinary three-column shape: the middle column lists
+        // 图片库 / 文件夹监听 / 导入行为 and the right pane draws the selected one.
+        case .album: albumGroupColumn
         case .capture: captureToolColumn
         case .settings: groupColumn
         }
@@ -301,6 +301,46 @@ struct MainView: View {
         }
     }
 
+    /// The middle column on 相册: its three groups, in the same row language the
+    /// settings pages use.
+    private var albumGroupColumn: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("相册")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer(minLength: 6)
+                Text("\(AlbumPageGroup.all.count) 组")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(AlbumPageGroup.all) { pageGroup in
+                        Button {
+                            withAnimation(.snappy(duration: 0.2)) { navigation.groupID = pageGroup.id }
+                        } label: {
+                            middleRow(
+                                symbol: pageGroup.symbol,
+                                title: pageGroup.title,
+                                selected: navigation.groupID == pageGroup.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .hoverHighlight(isSelected: navigation.groupID == pageGroup.id)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+            }
+        }
+    }
+
     private var groupColumn: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -490,7 +530,7 @@ struct MainView: View {
         case .pins:
             PinboardPage(model: model)
         case .album:
-            AlbumPage(model: model)
+            AlbumPage(model: model, groupID: $navigation.groupID)
         case .capture:
             // The middle column picked one of the four modes; the right pane is
             // that mode's *own* settings page, drawn in full (no group filter),

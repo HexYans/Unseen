@@ -335,10 +335,27 @@ final class AppModel {
     /// Re-read the album index from disk.
     func reloadAlbum() {
         album = AlbumStore.load()
+        backfillAlbumRows()
+        let resolvable = Set(albumItems.map(\.record.id))
+        let orphaned = album.filter { !resolvable.contains($0.id) }
+        if !orphaned.isEmpty {
+            // The history row was deleted (or trimmed): the album copy can no
+            // longer be previewed or pasted, so drop it rather than show a tile
+            // that opens nothing.
+            DebugLog.log("album: dropping \(orphaned.count) record(s) whose history row is gone")
+            for record in orphaned { AlbumStore.delete(record) }
+            album = AlbumStore.load()
+        }
     }
 
-    /// Album entries that still have a matching history row, so the grid never
-    /// shows a tile it cannot draw.
+    /// Album entries resolved against the loaded history rows.
+    ///
+    /// The album does not depend on the *window*: `items` only holds the newest
+    /// 500 rows, so a record whose row has scrolled past it (or was pinned from
+    /// an older page) would silently disappear from the grid even though its
+    /// image is still on disk. Rows outside the window are fetched on demand by
+    /// `reloadAlbum()`; anything still missing has genuinely been deleted, so it
+    /// is dropped from the wheel and reported once.
     var albumItems: [(record: AlbumStore.AlbumRecord, item: ClipItem)] {
         let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         return album.compactMap { record in
@@ -347,18 +364,56 @@ final class AppModel {
         }
     }
 
+    /// Load the history rows the album points at but `items` does not contain —
+    /// without them the 图片库 grid would render nothing.
+    func backfillAlbumRows() {
+        guard let database, !album.isEmpty else { return }
+        let known = Set(items.map(\.id))
+        let missing = album.map(\.itemID).filter { !known.contains($0) }
+        guard !missing.isEmpty else { return }
+        var extra: [ClipItem] = []
+        for id in missing {
+            if let row = try? database.item(id: id), row.hasImage { extra.append(row) }
+        }
+        guard !extra.isEmpty else { return }
+        items.append(contentsOf: extra)
+        DebugLog.log("album: backfilled \(extra.count) history row(s) for the album")
+    }
+
     /// Add one history row to the album. Used by the 历史记录 context menu and
     /// by the folder watcher (which writes the row first, then points at it).
     @discardableResult
     func addToAlbum(_ item: ClipItem, sourceName: String? = nil, sourceFolder: String? = nil) -> Bool {
-        guard item.hasImage, let data = fullImage(for: item) else { return false }
-        guard AlbumStore.load(for: item.id) == nil else { return false }  // already in
+        guard item.hasImage else {
+            lastError = "这条记录不是图片，无法加入相册"
+            return false
+        }
+        guard let data = fullImage(for: item), !data.isEmpty else {
+            // Report instead of silently returning false: the menu item used to
+            // do nothing at all when the history blob could not be read.
+            lastError = "读取图片失败，无法加入相册"
+            DebugLog.log("album: add failed for item \(item.id) (image bytes unreadable)")
+            return false
+        }
+        if AlbumStore.load(for: item.id) != nil {
+            // Already in — keep the row visible rather than pretending to fail.
+            reloadAlbum()
+            return true
+        }
         guard AlbumStore.save(
             pngData: data,
             itemID: item.id,
             sourceName: sourceName,
             sourceFolder: sourceFolder
-        ) != nil else { return false }
+        ) != nil else {
+            lastError = "写入相册失败（磁盘空间或权限）"
+            DebugLog.log("album: add failed for item \(item.id) (album write failed)")
+            return false
+        }
+        // Adding from 历史记录 means the row must stay out of the trimmer's way,
+        // otherwise a busy clipboard could drop it minutes later and the album
+        // tile would lose its history row.
+        protectFromTrimming(item)
         reloadAlbum()
         DebugLog.log("album: added item \(item.id)")
         return true

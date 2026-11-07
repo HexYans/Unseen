@@ -136,8 +136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 相册: the watcher's optional "打开面板", and the album page's "去设置".
         model.onRequestOpenPanel = { [weak self] in self?.panelController.show() }
         model.onRequestOpenAlbumSettings = { [weak self] in
-            self?.navigation.item = .albumSettings
-            self?.mainWindow.show(section: .settings)
+            // One album page now: jump to it and land on 文件夹监听.
+            self?.navigation.item = .album
+            self?.navigation.groupID = AlbumPageGroup.folder
+            self?.mainWindow.show(section: .album)
         }
         // The status item is the "status bar red dot + timer" surface.
         capture.onRecordingChanged = { [weak self] state, elapsedText in
