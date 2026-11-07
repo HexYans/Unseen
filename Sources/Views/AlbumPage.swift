@@ -1,135 +1,37 @@
 import AppKit
 import SwiftUI
 
-/// 相册 — the screenshot library, drawn in the app's ordinary three-column
-/// language instead of as one long scrolling page.
+/// 相册 — where screenshots are saved into **macOS Photos**.
 ///
-/// The middle column lists this page's groups (图片库 / 文件夹监听 / 导入行为) and
-/// the right pane draws the selected one, exactly like every settings page. That
-/// replaced a second 设置 → 相册 entry point: there is now **one** album page, and
-/// the folder switches live inside it rather than in two places.
+/// The page has two groups: 文件夹监听 and 导入行为. There is deliberately no
+/// list of what has already been imported: the pictures live in 照片, which
+/// already is the library — a second in-app gallery would only be a stale copy
+/// of the same thing.
 struct AlbumPage: View {
     @Bindable var model: AppModel
     @Binding var groupID: String
-    @State private var selection: UUID?
-
-    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
 
     var body: some View {
         Group {
             switch groupID {
-            case AlbumPageGroup.folder: folderPane
             case AlbumPageGroup.behavior: behaviorPane
-            default: libraryPane
+            default: folderPane
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    // MARK: - 图片库
-
-    private var libraryPane: some View {
-        let entries = model.albumItems
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header(count: entries.count)
-
-                if entries.isEmpty {
-                    emptyState
-                } else {
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(entries, id: \.record.id) { entry in
-                            AlbumTile(
-                                model: model,
-                                record: entry.record,
-                                item: entry.item,
-                                isSelected: selection == entry.record.id
-                            ) {
-                                selection = entry.record.id
-                                model.select(entry.item)
-                            }
-                            .contextMenu {
-                                Button("复制") { model.copy(entry.item, paste: false) }
-                                Button("钉在屏幕上") { model.pinToScreen(entry.item) }
-                                Button("在照片中查看") {
-                                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Photos") {
-                                        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
-                                    }
-                                }
-                                Divider()
-                                Button("从记录中移除（照片里保留）", role: .destructive) {
-                                    model.removeFromAlbum(entry.record)
-                                    if selection == entry.record.id { selection = nil }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 22)
-            .padding(.top, SettingsPageMetrics.headerTopPadding)
-            .padding(.bottom, 28)
-            .frame(maxWidth: 900, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-    }
-
-    private func header(count: Int) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: SettingsPageMetrics.headerTitleSpacing) {
-                Text("相册")
-                    .font(.system(size: 26, weight: .bold))
-                Text(
-                    count == 0
-                        ? "监听文件夹里的新截图会自动存进「照片」App。"
-                        : "\(count) 张已存入「照片」。右键可以复制、钉图或从记录里移除。"
-                )
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            NeutralCapsuleButton(title: "打开照片", help: "打开系统的「照片」App") {
-                if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Photos") {
-                    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
-                }
-            }
-        }
-    }
-
-    /// Nothing collected yet: this pane is the whole page, so it has to explain
-    /// both ways in and offer the folder switch instead of sending the user off
-    /// to another page.
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            GroupHeader("怎么把图片放进来")
-            GroupSlab {
-                GroupRow(
-                    symbol: "folder.badge.plus",
-                    color: SectionPalette.album,
-                    title: "监听一个文件夹",
-                    subtitle: model.settings.autoImportEnabled
-                        ? "已开启：新截图会自动存进「照片」"
-                        : "在「文件夹监听」里选择文件夹并开启"
-                ) {
-                    NeutralCapsuleButton(title: "去设置", help: "打开本页的「文件夹监听」") {
-                        groupID = AlbumPageGroup.folder
-                    }
-                }
-                GroupDivider()
-                GroupRow(
-                    symbol: "clock.arrow.circlepath",
-                    color: SectionPalette.history,
-                    title: "从历史记录存档",
-                    subtitle: "在历史记录里右键一张图片 →「存入「照片」」"
-                )
-            }
-        }
-    }
-
     // MARK: - 文件夹监听
 
     private var folderPane: some View {
-        page("选一个文件夹，之后保存进去的截图会自动进入相册。") {
+        page(
+            "选一个文件夹，之后保存进去的截图会自动存进「照片」。",
+            action: ("打开照片", {
+                if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Photos") {
+                    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+                }
+            })
+        ) {
             GroupSlab(
                 footer: "只认图片文件（png / jpg / heic 等）。开启的那一刻，文件夹里已有的图片不会被导入。"
             ) {
@@ -256,16 +158,25 @@ struct AlbumPage: View {
     /// every settings page uses so 相册 does not look like a different app.
     private func page<Content: View>(
         _ subtitle: String,
+        action: (title: String, handler: () -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsPageMetrics.sectionSpacing) {
-                VStack(alignment: .leading, spacing: SettingsPageMetrics.headerTitleSpacing) {
-                    Text("相册")
-                        .font(.system(size: 26, weight: .bold))
-                    Text(subtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: SettingsPageMetrics.headerTitleSpacing) {
+                        Text("相册")
+                            .font(.system(size: 26, weight: .bold))
+                        Text(subtitle)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    if let action {
+                        NeutralCapsuleButton(title: action.title, help: nil) {
+                            action.handler()
+                        }
+                    }
                 }
                 content()
             }
@@ -301,72 +212,5 @@ struct AlbumPage: View {
         model.settings.watchedFolderPath = url.path
         if !model.settings.autoImportEnabled { model.settings.autoImportEnabled = true }
         model.albumSettingsDidChange()
-    }
-}
-
-/// One album tile: a thumbnail with the provenance line underneath.
-private struct AlbumTile: View {
-    @Bindable var model: AppModel
-    let record: AlbumStore.AlbumRecord
-    let item: ClipItem
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    @State private var thumbnail: NSImage?
-
-    var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
-                    if let thumbnail {
-                        Image(nsImage: thumbnail)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        Image(systemName: "photo")
-                            .font(.system(size: 22))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .frame(height: 108)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(
-                            isSelected ? SectionPalette.album : Color.primary.opacity(0.08),
-                            lineWidth: isSelected ? 2 : 1
-                        )
-                }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(record.originText ?? item.kind.displayName)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(record.addedAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(8)
-            .background {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(SectionPalette.album.opacity(0.10))
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .task(id: record.id) {
-            guard thumbnail == nil else { return }
-            if let data = AlbumStore.imageData(for: record) {
-                thumbnail = NSImage(data: data)
-            } else if let image = model.thumbnailImage(for: item) {
-                thumbnail = image
-            }
-        }
     }
 }

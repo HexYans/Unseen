@@ -178,7 +178,6 @@ struct MainView: View {
         switch item {
         case .history: model.totalCount
         case .pins: model.pinboard.count
-        case .album: model.album.isEmpty ? nil : model.album.count
         default: nil
         }
     }

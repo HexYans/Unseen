@@ -466,13 +466,14 @@ enum AlbumPageGroup {
     static let behavior = "album-behavior"
 
     /// Drawing order in the middle column, and the ids the right pane switches on.
+    /// No 已存入照片 group: the imported pictures are in 照片 itself, so an
+    /// in-app list would only mirror it badly.
     static let all: [PageGroup] = [
-        PageGroup(id: library, title: "已存入照片", symbol: "photo.on.rectangle.angled"),
         PageGroup(id: folder, title: "文件夹监听", symbol: "folder.badge.plus"),
         PageGroup(id: behavior, title: "导入行为", symbol: "slider.horizontal.3")
     ]
 
-    static var defaultGroup: String { library }
+    static var defaultGroup: String { folder }
 }
 
 /// The window's four-corner chrome.

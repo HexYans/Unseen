@@ -13744,13 +13744,14 @@ enum OverlaySelfTest {
             "records=\(model.album.count)"
         )
 
-        // 8. Removing a record only forgets the local entry; 照片 keeps the photo,
-        //    and the history row is untouched.
+        // 8. The record index is what tells 历史记录 "already in 照片"; dropping it
+        //    by hand must not touch the history row it points at.
         if let first = model.album.last {
             let historyCountBefore = model.totalCount
-            model.removeFromAlbum(first)
+            AlbumStore.delete(first)
+            model.reloadAlbum()
             check(
-                "photos: removing a record does not touch 照片 or history",
+                "photos: forgetting a record leaves 照片 and history alone",
                 model.album.count == 1 && model.totalCount == historyCountBefore,
                 "records=\(model.album.count) history=\(model.totalCount)/\(historyCountBefore)"
             )
@@ -13793,8 +13794,8 @@ enum OverlaySelfTest {
 
         // 12. 相册 is a content page with its own groups — not a settings page.
         check(
-            "photos: the page has its own three groups and is not a settings page",
-            AlbumPageGroup.all.map(\.title) == ["已存入照片", "文件夹监听", "导入行为"]
+            "photos: the page has two groups and is not a settings page",
+            AlbumPageGroup.all.map(\.title) == ["文件夹监听", "导入行为"]
                 && !SettingsSection.allCases.contains { $0.rawValue == "album" },
             "groups=\(AlbumPageGroup.all.map(\.title)) settings=\(SettingsSection.allCases.count)"
         )

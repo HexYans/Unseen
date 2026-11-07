@@ -341,54 +341,15 @@ final class AppModel {
         }
     }
 
-    // MARK: - 相册 (album)
+    // MARK: - 相册 (Apple Photos)
 
-    /// Re-read the album index from disk.
+    /// Re-read the record of what has already been saved to 照片.
+    ///
+    /// There is no in-app gallery any more — 照片 *is* the gallery — but the
+    /// records are still what keeps 存入「照片」 idempotent and what lets the
+    /// history menu say 已存入「照片」 instead of offering a second copy.
     func reloadAlbum() {
         album = AlbumStore.load()
-        backfillAlbumRows()
-        let resolvable = Set(albumItems.map(\.record.id))
-        let orphaned = album.filter { !resolvable.contains($0.id) }
-        if !orphaned.isEmpty {
-            // The history row was deleted (or trimmed): the album copy can no
-            // longer be previewed or pasted, so drop it rather than show a tile
-            // that opens nothing.
-            DebugLog.log("album: dropping \(orphaned.count) record(s) whose history row is gone")
-            for record in orphaned { AlbumStore.delete(record) }
-            album = AlbumStore.load()
-        }
-    }
-
-    /// Album entries resolved against the loaded history rows.
-    ///
-    /// The album does not depend on the *window*: `items` only holds the newest
-    /// 500 rows, so a record whose row has scrolled past it (or was pinned from
-    /// an older page) would silently disappear from the grid even though its
-    /// image is still on disk. Rows outside the window are fetched on demand by
-    /// `reloadAlbum()`; anything still missing has genuinely been deleted, so it
-    /// is dropped from the wheel and reported once.
-    var albumItems: [(record: AlbumStore.AlbumRecord, item: ClipItem)] {
-        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
-        return album.compactMap { record in
-            guard let item = byID[record.itemID] else { return nil }
-            return (record, item)
-        }
-    }
-
-    /// Load the history rows the album points at but `items` does not contain —
-    /// without them the 图片库 grid would render nothing.
-    func backfillAlbumRows() {
-        guard let database, !album.isEmpty else { return }
-        let known = Set(items.map(\.id))
-        let missing = album.map(\.itemID).filter { !known.contains($0) }
-        guard !missing.isEmpty else { return }
-        var extra: [ClipItem] = []
-        for id in missing {
-            if let row = try? database.item(id: id), row.hasImage { extra.append(row) }
-        }
-        guard !extra.isEmpty else { return }
-        items.append(contentsOf: extra)
-        DebugLog.log("album: backfilled \(extra.count) history row(s) for the album")
     }
 
     /// Save one history image into **Apple Photos**.
@@ -479,13 +440,6 @@ final class AppModel {
             lastError = error.localizedDescription
             return false
         }
-    }
-
-    /// Remove an album entry (and its album file). The history row stays so a
-    /// pasted image does not vanish from 历史记录 as a side effect.
-    func removeFromAlbum(_ record: AlbumStore.AlbumRecord) {
-        AlbumStore.delete(record)
-        reloadAlbum()
     }
 
     func togglePin(_ item: ClipItem) {
