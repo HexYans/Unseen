@@ -399,7 +399,7 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
         // z-order here; there is no separate layer for the handles.
         crosshair.frame = bounds
         crosshair.autoresizingMask = [.width, .height]
-        crosshair.isHidden = !showCrosshair
+        crosshair.isHidden = !crosshairWanted
         addSubview(crosshair)
 
         selectionBorder.frame = bounds
@@ -640,7 +640,7 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             annotationCanvas.selectionRect = .zero
             toolbar.isHidden = true
             indicator.isHidden = true
-            crosshair.isHidden = !showCrosshair
+            crosshair.isHidden = !crosshairWanted
             windowHighlight.isHidden = false
             windowHighlight.entries = [
                 WindowHighlightView.Entry(
@@ -681,7 +681,7 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
 
         let hasChrome = rect.width >= 2 && rect.height >= 2
         indicator.isHidden = !hasChrome
-        crosshair.isHidden = !showCrosshair
+        crosshair.isHidden = !crosshairWanted
 
         guard hasChrome else {
             cancelToolbarReveal()
@@ -924,7 +924,7 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
         scrollPod.isHidden = true
         annotationCanvas.isHidden = true
         annotationCanvas.selectionRect = rect
-        crosshair.isHidden = !showCrosshair
+        crosshair.isHidden = !crosshairWanted
 
         // Exactly what `layoutCommittedChrome` draws for a screenshot box.
         dimming.selectionRect = rect
@@ -971,6 +971,11 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
 
     func beginScrollSession() {
         guard scrollMode, committedRect != nil else { return }
+        // The cross only helps while framing. Once the box is settled it is in
+        // the way of the thing the user is actually looking at — the page they
+        // are about to scroll — so it goes away and stays away.
+        unfreezeCrosshair()
+        crosshair.isHidden = true
         if !isScrollActive {
             isScrollActive = true
             scrollPhase = .empty
@@ -999,11 +1004,6 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             clearArmedWindowPick()
             selectionBorder.setSelection(rect)
             layoutSelection()
-            // A clicked window should settle exactly like a hand-drawn box: the
-            // cross gathers onto the box's bottom-right corner, flush with the
-            // window's edge, so the selection reads as "I framed this myself"
-            // instead of "a rectangle appeared".
-            freezeCrosshair(for: rect, releasedAt: CGPoint(x: rect.maxX, y: rect.minY))
         }
         beginScrollSession()
         onSelectionDrawn?(rect, annotationsForExport)
@@ -1247,6 +1247,14 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
     /// the corner is taken from the rect and only *chosen* by the pointer). The
     /// two arms then run along the right/left and bottom/top edges out to the
     /// screen edges, so they coincide with the selection's own two edges.
+    /// Whether the cross should be on screen at all.
+    ///
+    /// The crosshair is a *framing* aid: it helps while the user is choosing the
+    /// region. A live scrolling capture is the opposite situation — the user is
+    /// reading the page and dragging the wheel — so the cross is dropped for the
+    /// whole session, including after the selection is confirmed.
+    private var crosshairWanted: Bool { showCrosshair && !isScrollActive }
+
     private func freezeCrosshair(for rect: CGRect, releasedAt point: CGPoint) {
         guard showCrosshair, !windowConfirmationOnly,
               rect.width >= 2, rect.height >= 2 else {
@@ -2059,7 +2067,7 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
     /// updates the live capture, which is the point of having it here.
     private func applyCrosshairVisibility(_ on: Bool) {
         showCrosshair = on
-        crosshair.isHidden = !on
+        crosshair.isHidden = !crosshairWanted
         settings?.showCrosshair = on
         toolbar.setCrosshairOn(on)
         DebugLog.log("toolbar crosshair: \(on)")

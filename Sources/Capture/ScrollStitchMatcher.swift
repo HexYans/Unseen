@@ -43,23 +43,42 @@ enum ScrollStitchMatcher {
     ///
     /// iShot keeps a whole array of per-column values; a mean is the same test
     /// with one number, and the pixel pass below is what actually decides.
+    /// How many buckets a row's signature is split into. One mean luminance is
+    /// far too weak — a blank line, a paragraph and a heading all average to
+    /// "paper" — so the row is described by a handful of horizontal slices, and
+    /// every slice has to agree. Cheap enough to run on every candidate offset.
+    static let signatureBuckets = 8
+
     static func rowSignature(
         _ raster: ScrollStitcher.SampledRaster,
         y: Int,
         columns: [Bool]? = nil
-    ) -> Int {
+    ) -> [Int] {
         let columnCount = raster.columnCount
-        guard columnCount > 0 else { return 0 }
-        var total = 0.0
-        var counted = 0
+        guard columnCount > 0 else { return [] }
+        var sums = [Double](repeating: 0, count: signatureBuckets)
+        var counts = [Int](repeating: 0, count: signatureBuckets)
         for column in 0..<columnCount {
             guard isInsideMargin(column: column, of: raster) else { continue }
             if let columns, column < columns.count, !columns[column] { continue }
-            total += luminance(raster.rgb(column: column, y: y))
-            counted += 1
+            let bucket = min(signatureBuckets - 1, column * signatureBuckets / columnCount)
+            sums[bucket] += luminance(raster.rgb(column: column, y: y))
+            counts[bucket] += 1
         }
-        guard counted > 0 else { return 0 }
-        return Int((total / Double(counted)).rounded())
+        return (0..<signatureBuckets).map { bucket in
+            guard counts[bucket] > 0 else { return -1 }
+            return Int((sums[bucket] / Double(counts[bucket])).rounded())
+        }
+    }
+
+    /// Signature agreement: every bucket within tolerance, skipping empty ones.
+    static func signaturesMatch(_ a: [Int], _ b: [Int]) -> Bool {
+        guard a.count == b.count, !a.isEmpty else { return false }
+        for index in 0..<a.count {
+            if a[index] < 0 || b[index] < 0 { continue }
+            if abs(a[index] - b[index]) > signatureTolerance { return false }
+        }
+        return true
     }
 
     /// Which sampled columns actually **scroll**.
@@ -142,6 +161,54 @@ enum ScrollStitchMatcher {
         return compared > 0
     }
 
+    /// The overlap, trying the most informative column band first.
+    ///
+    /// Order matters. The moving columns are the truest signal; the right-hand
+    /// 70 % is the "content is on the right, a sidebar is on the left" fallback
+    /// for the frames where the moving-column detection says nothing useful
+    /// (a hover highlight that touched the whole window, a gradient); the whole
+    /// row is the last resort.
+    static func overlapBest(
+        existing: ScrollStitcher.SampledRaster,
+        next: ScrollStitcher.SampledRaster,
+        movingColumns: [Bool]?,
+        skipTopRows: Int
+    ) -> (overlap: Int, band: String)? {
+        if let movingColumns,
+           let overlap = overlap(
+               existing: existing,
+               next: next,
+               columns: movingColumns,
+               skipTopRows: skipTopRows
+           ) {
+            return (overlap, "moving")
+        }
+        // Right-hand 70 %: a static sidebar is nearly always on the left.
+        let columnCount = min(existing.columnCount, next.columnCount)
+        if columnCount >= 8 {
+            let start = columnCount * 3 / 10
+            var band = [Bool](repeating: false, count: columnCount)
+            for column in start..<columnCount { band[column] = true }
+            if let overlap = overlap(
+                existing: existing,
+                next: next,
+                columns: band,
+                skipTopRows: skipTopRows
+            ) {
+                return (overlap, "right70")
+            }
+        }
+        if let overlap = overlap(
+            existing: existing,
+            next: next,
+            columns: nil,
+            skipTopRows: skipTopRows
+        ) {
+            return (overlap, "whole")
+        }
+        return nil
+    }
+
     /// How many rows the two frames share, iShot's way.
     ///
     /// `next` is the freshly captured frame; `existing` is the stitch so far.
@@ -183,8 +250,10 @@ enum ScrollStitchMatcher {
             }
             var signatureOK = true
             for offset in skipTop..<overlap {
-                let delta = abs(nextSignature[offset] - existingSignature[existingStart + offset])
-                if delta > signatureTolerance {
+                if !signaturesMatch(
+                    nextSignature[offset],
+                    existingSignature[existingStart + offset]
+                ) {
                     signatureOK = false
                     break
                 }

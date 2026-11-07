@@ -143,11 +143,19 @@ struct ScrollAutoStitcher {
         let movingColumns = previous.flatMap {
             ScrollStitchMatcher.movingColumns($0, sampled)
         }
-        let iShotOverlap = ScrollStitchMatcher.overlap(
+        let best = ScrollStitchMatcher.overlapBest(
             existing: store.sampled,
             next: sampled,
-            columns: movingColumns,
+            movingColumns: movingColumns,
             skipTopRows: pinnedTop
+        )
+        let iShotOverlap = best?.overlap
+        DebugLog.log(
+            "scroll: match moving="
+                + "\(movingColumns?.filter { $0 }.count ?? -1)/\(sampled.columnCount) "
+                + "pinnedTop=\(pinnedTop) band=\(best?.band ?? "-") "
+                + "overlap=\(iShotOverlap.map(String.init) ?? "nil") "
+                + "stitchH=\(store.height) frameH=\(frame.height)"
         )
         let match = ScrollStitcher.findMatch(
             existing: store.sampled,
