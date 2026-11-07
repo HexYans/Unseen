@@ -999,6 +999,11 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             clearArmedWindowPick()
             selectionBorder.setSelection(rect)
             layoutSelection()
+            // A clicked window should settle exactly like a hand-drawn box: the
+            // cross gathers onto the box's bottom-right corner, flush with the
+            // window's edge, so the selection reads as "I framed this myself"
+            // instead of "a rectangle appeared".
+            freezeCrosshair(for: rect, releasedAt: CGPoint(x: rect.maxX, y: rect.minY))
         }
         beginScrollSession()
         onSelectionDrawn?(rect, annotationsForExport)

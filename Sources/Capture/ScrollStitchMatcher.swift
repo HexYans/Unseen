@@ -39,22 +39,72 @@ enum ScrollStitchMatcher {
         0.11 * Double(rgb.0) + 0.59 * Double(rgb.1) + 0.30 * Double(rgb.2)
     }
 
-    /// One row's signature: the mean luminance of the sampled columns.
+    /// One row's signature: the mean luminance of the compared columns.
     ///
     /// iShot keeps a whole array of per-column values; a mean is the same test
     /// with one number, and the pixel pass below is what actually decides.
-    static func rowSignature(_ raster: ScrollStitcher.SampledRaster, y: Int) -> Int {
-        let columns = raster.columnCount
-        guard columns > 0 else { return 0 }
+    static func rowSignature(
+        _ raster: ScrollStitcher.SampledRaster,
+        y: Int,
+        columns: [Bool]? = nil
+    ) -> Int {
+        let columnCount = raster.columnCount
+        guard columnCount > 0 else { return 0 }
         var total = 0.0
         var counted = 0
-        for column in 0..<columns {
+        for column in 0..<columnCount {
             guard isInsideMargin(column: column, of: raster) else { continue }
+            if let columns, column < columns.count, !columns[column] { continue }
             total += luminance(raster.rgb(column: column, y: y))
             counted += 1
         }
         guard counted > 0 else { return 0 }
         return Int((total / Double(counted)).rounded())
+    }
+
+    /// Which sampled columns actually **scroll**.
+    ///
+    /// A window is not one surface: a browser has a tab bar above and often a
+    /// sidebar on the left, and a file list has a column of labels that never
+    /// moves. Comparing whole rows then never lines up — the sidebar pins the
+    /// left third, the content disagrees, and the frame is declared unmatched,
+    /// which is why a window with a fixed sidebar did not stitch at all.
+    ///
+    /// The fix is the one the user described: read the **scroll offset** from the
+    /// part that moves, then append the whole row. The sidebar is carried along
+    /// with that offset, so the long image keeps a continuous sidebar instead of
+    /// being cropped to the content area.
+    ///
+    /// A column counts as moving when any sampled row differs between the two
+    /// frames at the same y. Returns nil when *nothing* moves (a still page) or
+    /// when everything does (an ordinary full-width page): both cases are what
+    /// the whole-row test already handles correctly.
+    static func movingColumns(
+        _ a: ScrollStitcher.SampledRaster,
+        _ b: ScrollStitcher.SampledRaster
+    ) -> [Bool]? {
+        let height = min(a.height, b.height)
+        let columns = min(a.columnCount, b.columnCount)
+        guard height >= 2, columns > 0 else { return nil }
+        var moving = [Bool](repeating: false, count: columns)
+        var movingCount = 0
+        let rowStride = max(1, height / 64)
+        for column in 0..<columns {
+            var y = 0
+            while y < height {
+                let left = luminance(a.rgb(column: column, y: y))
+                let right = luminance(b.rgb(column: column, y: y))
+                if abs(left - right) > luminanceTolerance {
+                    moving[column] = true
+                    movingCount += 1
+                    break
+                }
+                y += rowStride
+            }
+        }
+        // Nothing moved, or everything did: no useful split.
+        guard movingCount > 0, movingCount < columns else { return nil }
+        return moving
     }
 
     private static func isInsideMargin(
@@ -74,7 +124,8 @@ enum ScrollStitchMatcher {
         _ a: ScrollStitcher.SampledRaster,
         _ aY: Int,
         _ b: ScrollStitcher.SampledRaster,
-        _ bY: Int
+        _ bY: Int,
+        columns only: [Bool]? = nil
     ) -> Bool {
         guard aY >= 0, aY < a.height, bY >= 0, bY < b.height else { return false }
         let columns = min(a.columnCount, b.columnCount)
@@ -82,6 +133,7 @@ enum ScrollStitchMatcher {
         var compared = 0
         for column in 0..<columns {
             guard isInsideMargin(column: column, of: a) else { continue }
+            if let only, column < only.count, !only[column] { continue }
             compared += 1
             let left = luminance(a.rgb(column: column, y: aY))
             let right = luminance(b.rgb(column: column, y: bY))
@@ -101,20 +153,36 @@ enum ScrollStitchMatcher {
     /// scroll" — the same conclusion iShot draws.
     static func overlap(
         existing: ScrollStitcher.SampledRaster,
-        next: ScrollStitcher.SampledRaster
+        next: ScrollStitcher.SampledRaster,
+        columns only: [Bool]? = nil,
+        skipTopRows: Int = 0
     ) -> Int? {
         let height = min(existing.height, next.height)
         guard height >= minimumOverlap else { return nil }
-        let existingSignature = (0..<existing.height).map { rowSignature(existing, y: $0) }
-        let nextSignature = (0..<next.height).map { rowSignature(next, y: $0) }
+        // A window selection starts at the window's top edge, which is a title
+        // bar: those rows are identical in every frame and can never take part in
+        // a displacement. Skipping them is what lets a clicked window stitch at
+        // all — a dragged region normally excludes the bar, which is why this only
+        // showed up on the window path.
+        let skipTop = min(max(0, skipTopRows), max(0, height - minimumOverlap))
+        let existingSignature = (0..<existing.height).map {
+            rowSignature(existing, y: $0, columns: only)
+        }
+        let nextSignature = (0..<next.height).map {
+            rowSignature(next, y: $0, columns: only)
+        }
 
         var overlap = height
         while overlap >= minimumOverlap {
             let existingStart = existing.height - overlap
             guard existingStart >= 0 else { break }
             // Pre-check on signatures, then the pixel pass on the same rows.
+            guard overlap - skipTop >= minimumOverlap else {
+                overlap -= 1
+                continue
+            }
             var signatureOK = true
-            for offset in 0..<overlap {
+            for offset in skipTop..<overlap {
                 let delta = abs(nextSignature[offset] - existingSignature[existingStart + offset])
                 if delta > signatureTolerance {
                     signatureOK = false
@@ -123,10 +191,11 @@ enum ScrollStitchMatcher {
             }
             if signatureOK {
                 var pixelsOK = true
-                for offset in 0..<overlap {
+                for offset in skipTop..<overlap {
                     if !rowsMatch(
                         existing, existingStart + offset,
-                        next, offset
+                        next, offset,
+                        columns: only
                     ) {
                         pixelsOK = false
                         break

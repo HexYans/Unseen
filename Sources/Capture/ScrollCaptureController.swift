@@ -114,6 +114,13 @@ struct ScrollAutoStitcher {
 
         let previous = previousSampled
         previousSampled = sampled
+        // Rows that are identical in both frames at the same y: a window title
+        // bar, a sticky table header. They are not page content and must not vote
+        // on the displacement — a clicked window selection includes its title bar,
+        // which is why only the window path failed to stitch.
+        let pinnedTop = previous.map {
+            ScrollStitcher.pinnedTopRows(previous: $0, next: sampled)
+        } ?? 0
         // Where the previous sample sat. `frameTop` is the previous sample's
         // position even when that sample was refused, so the next measured move
         // is added to the right row instead of to a stale one.
@@ -128,9 +135,19 @@ struct ScrollAutoStitcher {
         // works on ordinary pages. The local search stays as the fallback for
         // the frames iShot's rule rejects outright (a mostly-empty page, a hard
         // theme switch mid-scroll).
+        // Read the scroll offset from the columns that actually move, then
+        // append the **whole** row: a window's fixed sidebar is carried along
+        // with that offset, so the long image keeps a continuous sidebar instead
+        // of being cropped to the content area. Comparing whole rows is what
+        // made a sidebar window refuse to stitch at all.
+        let movingColumns = previous.flatMap {
+            ScrollStitchMatcher.movingColumns($0, sampled)
+        }
         let iShotOverlap = ScrollStitchMatcher.overlap(
             existing: store.sampled,
-            next: sampled
+            next: sampled,
+            columns: movingColumns,
+            skipTopRows: pinnedTop
         )
         let match = ScrollStitcher.findMatch(
             existing: store.sampled,
@@ -153,11 +170,6 @@ struct ScrollAutoStitcher {
         let displacement = needsMotionCheck
             ? previous.flatMap { ScrollStitcher.frameDisplacement(previous: $0, next: sampled) }
             : nil
-        // A sticky header is on every frame at the same y, so it is not page
-        // content and must not be compared against the stitch.
-        let pinnedTop = previous.map {
-            ScrollStitcher.pinnedTopRows(previous: $0, next: sampled)
-        } ?? 0
         if needsMotionCheck, let displacement {
             let expectedTop = previousTop + displacement
             if displacement < 0 {
