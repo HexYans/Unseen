@@ -78,6 +78,10 @@ struct AlbumPage: View {
 
     // MARK: - Empty state
 
+    /// When nothing has been collected yet, this is the only thing on the page,
+    /// so it explains both ways in *and* carries the folder switches: a user who
+    /// has never turned the feature on should be able to do it right here
+    /// instead of hunting through 设置 → 相册.
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 0) {
             GroupHeader("怎么把图片放进来")
@@ -101,26 +105,112 @@ struct AlbumPage: View {
         }
     }
 
-    // MARK: - Watcher summary (read-only here; the switches live in 设置 → 相册)
+    // MARK: - Folder watching (the switches live here as well as in 设置 → 相册)
 
+    /// The folder-watching controls, inline on the album page.
+    ///
+    /// These are the *same* `AppSettings` switches the 设置 → 相册 page edits —
+    /// one source of truth, two doors. The album page is where a user actually
+    /// notices "nothing is being collected", so making them come back through
+    /// 设置 to fix it would be a gratuitous detour.
     private var watcherCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             GroupHeader("文件夹监听")
-            GroupSlab(footer: "开关和选项在 设置 → 相册。这里只显示当前状态。") {
+            GroupSlab(
+                footer: "只认图片文件（png / jpg / heic 等）。开启的那一刻，文件夹里已有的图片不会被导入。"
+            ) {
                 GroupRow(
-                    symbol: model.folderWatcher.isWatching ? "eye.fill" : "eye.slash",
-                    color: model.folderWatcher.isWatching ? .green : .gray,
-                    title: model.settings.watchedFolderPath.isEmpty
-                        ? "还没有选择文件夹"
-                        : (model.settings.watchedFolderPath as NSString).abbreviatingWithTildeInPath,
-                    subtitle: watcherSubtitle
+                    symbol: "folder.badge.plus",
+                    color: SectionPalette.album,
+                    title: "监听文件夹",
+                    subtitle: model.settings.watchedFolderPath.isEmpty
+                        ? "还没有选择"
+                        : (model.settings.watchedFolderPath as NSString).abbreviatingWithTildeInPath
                 ) {
                     NeutralCapsuleButton(
-                        title: "去设置",
-                        help: "打开 设置 → 相册，选择要监听的文件夹"
+                        title: "选择…",
+                        help: "选择截图保存到的文件夹"
                     ) {
-                        model.onRequestOpenAlbumSettings?()
+                        chooseWatchedFolder()
                     }
+                }
+
+                GroupDivider()
+
+                GroupRow(
+                    symbol: "eye.fill",
+                    color: model.settings.autoImportEnabled ? .green : .gray,
+                    title: "开启监听",
+                    subtitle: model.settings.autoImportEnabled
+                        ? watcherSubtitle
+                        : "关闭时不会读取任何文件"
+                ) {
+                    toggle(Binding(
+                        get: { model.settings.autoImportEnabled },
+                        set: { model.settings.autoImportEnabled = $0; model.albumSettingsDidChange() }
+                    ))
+                }
+
+                GroupDivider()
+
+                GroupRow(
+                    symbol: "arrow.triangle.branch",
+                    color: .blue,
+                    title: "包含子文件夹",
+                    subtitle: "开启后连子文件夹里的图片一起收"
+                ) {
+                    toggle(Binding(
+                        get: { model.settings.autoImportRespectSubfolders },
+                        set: { model.settings.autoImportRespectSubfolders = $0; model.albumSettingsDidChange() }
+                    ))
+                }
+            }
+
+            GroupHeader("导入行为")
+                .padding(.top, 14)
+            GroupSlab(footer: "「保留原文件」关闭时，文件会在成功导入之后才删除；导入失败绝不会删文件。") {
+                GroupRow(
+                    symbol: "doc.badge.plus",
+                    color: .teal,
+                    title: "保留原文件",
+                    subtitle: model.settings.autoImportKeepOriginal
+                        ? "导入后文件还在原处（复制一份进相册）"
+                        : "导入后删除原文件（相当于移进相册）"
+                ) {
+                    toggle(Binding(
+                        get: { model.settings.autoImportKeepOriginal },
+                        set: { model.settings.autoImportKeepOriginal = $0 }
+                    ))
+                }
+
+                GroupDivider()
+
+                GroupRow(
+                    symbol: "photo",
+                    color: .indigo,
+                    title: "只导入图片",
+                    subtitle: model.settings.autoImportOnlyImages
+                        ? "跳过非图片文件"
+                        : "尝试读取所有文件（非图片仍会被拒绝）"
+                ) {
+                    toggle(Binding(
+                        get: { model.settings.autoImportOnlyImages },
+                        set: { model.settings.autoImportOnlyImages = $0 }
+                    ))
+                }
+
+                GroupDivider()
+
+                GroupRow(
+                    symbol: "macwindow",
+                    color: .orange,
+                    title: "导入后打开面板",
+                    subtitle: "方便马上把刚收的截图粘出去"
+                ) {
+                    toggle(Binding(
+                        get: { model.settings.autoImportOpenPanel },
+                        set: { model.settings.autoImportOpenPanel = $0 }
+                    ))
                 }
             }
         }
@@ -129,12 +219,42 @@ struct AlbumPage: View {
     private var watcherSubtitle: String {
         let watcher = model.folderWatcher
         if let error = watcher.lastError { return "出错：\(error)" }
-        guard model.settings.autoImportEnabled else { return "未开启" }
-        guard watcher.isWatching else { return "没有可监听的文件夹" }
+        if !model.settings.watchedFolderPath.isEmpty && !watcher.isWatching {
+            return "未在监听"
+        }
         var parts = ["监听中"]
-        if let name = watcher.lastImportedName { parts.append("最近导入 \(name)") }
+        if let name = watcher.lastImportedName { parts.append("最近 \(name)") }
         parts.append("本次已导入 \(watcher.importedCount) 张")
         return parts.joined(separator: " · ")
+    }
+
+    /// Trailing switch, same style every settings row uses.
+    private func toggle(_ isOn: Binding<Bool>) -> some View {
+        Toggle("", isOn: isOn)
+            .labelsHidden()
+            .toggleStyle(NeutralSwitchStyle())
+    }
+
+    /// Picking a folder implies intent, so arm the watcher in the same click —
+    /// otherwise the user chooses a folder and nothing happens until they also
+    /// find the 开启监听 row.
+    private func chooseWatchedFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "监听此文件夹"
+        panel.message = "选择截图保存到的文件夹"
+        if !model.settings.watchedFolderPath.isEmpty {
+            panel.directoryURL = URL(
+                fileURLWithPath: (model.settings.watchedFolderPath as NSString).expandingTildeInPath
+            )
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.settings.watchedFolderPath = url.path
+        if !model.settings.autoImportEnabled { model.settings.autoImportEnabled = true }
+        model.albumSettingsDidChange()
     }
 }
 
