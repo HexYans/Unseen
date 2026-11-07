@@ -230,7 +230,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let fired = GlobalHotKeyCenter.shared.fireForTesting(action)
             print("fired=\(fired) action=\(name)")
-            exit(fired ? 0 : 1)
+            // A scrolling capture is a *session*, not a one-shot panel: exiting
+            // here would tear down the overlay before it could be used, so the
+            // probe stays resident for it and quits for everything else.
+            if action != .scroll {
+                exit(fired ? 0 : 1)
+            }
         }
 
         scheduleCaptureProbeIfRequested()
