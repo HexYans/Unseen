@@ -258,7 +258,8 @@ enum ScrollStitcher {
                 bodyStart: bodyStart,
                 bodyEnd: bodyEnd,
                 sampledRows: 6,
-                pinnedColumns: body.columns
+                pinnedColumns: body.columns,
+                pinnedRows: body.rows
             )
             if fraction <= 0.06 { coarse.append((fraction, shift)) }
             shift += 1
@@ -285,14 +286,21 @@ enum ScrollStitcher {
                 bodyStart: bodyStart,
                 bodyEnd: bodyEnd,
                 sampledRows: sampleRows,
-                pinnedColumns: body.columns
+                pinnedColumns: body.columns,
+                pinnedRows: body.rows
             )
             guard fraction <= maximumDifferentFraction else { continue }
             let detailRows = spacedRows(
                 from: max(bodyStart, 0),
                 to: min(bodyEnd, min(next.height, existing.height - candidate.shift)),
                 count: detailSampleRows
-            )
+            ).filter { row in
+                guard let rows = body.rows else { return true }
+                if row < rows.count, rows[row] { return false }
+                let shifted = row + candidate.shift
+                if shifted >= 0, shifted < rows.count, rows[shifted] { return false }
+                return true
+            }
             let detail = informativeMismatch(
                 existing: existing,
                 next: next,
@@ -361,7 +369,8 @@ enum ScrollStitcher {
         bodyStart: Int,
         bodyEnd: Int,
         sampledRows: Int,
-        pinnedColumns: [Bool]? = nil
+        pinnedColumns: [Bool]? = nil,
+        pinnedRows: [Bool]? = nil
     ) -> Double {
         let range = shiftRows(shift: shift, bodyStart: bodyStart, bodyEnd: bodyEnd,
                               existingHeight: existing.height, nextHeight: next.height)
@@ -374,6 +383,23 @@ enum ScrollStitcher {
         var total = 0
         for index in 0..<rowCount {
             let y = range.start + (index * span) / rowCount
+            // A pinned row is identical at the same y in both frames, so at any
+            // non-zero shift it compares a bar against content. Skipping it is
+            // what lets a window selection — title bar above, status bar below —
+            // stitch at all: without this the bottom bar alone put the mismatch
+            // fraction over the ceiling and the session declared the page
+            // unscrollable.
+            // Skip a row when *either* side of the comparison is pinned: a pinned
+            // row only matches at zero shift, so at any real displacement it
+            // compares a bar against content (or the reverse) and pollutes the
+            // fraction. The shifted index matters as much as `y` — a bottom bar
+            // in the incoming frame lines up with page content in the stitched
+            // one, which is exactly how a window selection used to fail.
+            if let pinnedRows {
+                if y < pinnedRows.count, pinnedRows[y] { continue }
+                let shifted = y + shift
+                if shifted >= 0, shifted < pinnedRows.count, pinnedRows[shifted] { continue }
+            }
             for column in 0..<columns {
                 // A pinned column never moves, so it can neither confirm nor
                 // deny a displacement — counting it just dilutes the evidence.

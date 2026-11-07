@@ -3884,68 +3884,69 @@ enum OverlaySelfTest {
     }
 
     /// A tall page of distinct horizontal stripes, so any two viewports of it
-    /// have exactly one true displacement.
+    /// have exactly one true displacement. Drawn pixel-exact through `CGContext`.
     private static func makeStripedPage(width: Int, height: Int) -> CGImage? {
-        guard width > 0, height > 0,
-              let rep = NSBitmapImageRep(
-                  bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
-                  bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-              ),
-              let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
+        guard width > 0, height > 0 else { return nil }
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
         for y in 0..<height {
-            // Unique per row: a 4-row period with a slow drift, plus a hard
-            // edge every 8 rows so the matcher has detail to lock onto.
-            let v = UInt8((y * 7) % 256)
             let edge = y % 8 == 0
-            NSColor(
-                srgbRed: CGFloat(v) / 255,
+            context.setFillColor(CGColor(
+                srgbRed: CGFloat((y * 7) % 256) / 255,
                 green: CGFloat((y * 13) % 256) / 255,
                 blue: edge ? 1 : CGFloat((y * 29) % 256) / 255,
                 alpha: 1
-            ).setFill()
-            CGRect(x: 0, y: height - y - 1, width: width, height: 1).fill()
+            ))
+            context.fill(CGRect(x: 0, y: height - y - 1, width: width, height: 1))
         }
-        NSGraphicsContext.restoreGraphicsState()
-        return rep.cgImage
+        return context.makeImage()
     }
 
     /// A viewport of `page` starting at `offset`, with the top `pinnedBand` rows
-    /// replaced by a fixed bar — the "part of the selection that does not move".
+    /// and the bottom `bottomBand` rows replaced by fixed bars — the parts of a
+    /// window selection that do not move.
+    ///
+    /// Built with `CGContext.draw` at 1:1 rather than `NSImage.draw`, so the
+    /// pixels are exactly the page's: a resampled fixture would blur the rows and
+    /// make the matcher's tolerance the thing under test instead of its logic.
     private static func makeViewport(
         from page: CGImage,
         offset: Int,
         height: Int,
-        pinnedBand: Int
+        pinnedBand: Int,
+        bottomBand: Int = 0
     ) -> CGImage? {
-        guard offset >= 0, height > 0, page.height >= offset + height,
-              let rep = NSBitmapImageRep(
-                  bitmapDataPlanes: nil, pixelsWide: page.width, pixelsHigh: height,
-                  bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-              ),
-              let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
+        guard offset >= 0, height > 0, page.height >= offset + height else { return nil }
+        guard let context = CGContext(
+            data: nil,
+            width: page.width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .none
         let slice = page.cropping(to: CGRect(
             x: 0, y: offset, width: page.width, height: height
         ))
         if let slice {
-            NSImage(cgImage: slice, size: NSSize(width: page.width, height: height))
-                .draw(in: NSRect(x: 0, y: 0, width: page.width, height: height))
+            context.draw(slice, in: CGRect(x: 0, y: 0, width: page.width, height: height))
         }
-        // The pinned bar is drawn last, so it is identical in every viewport.
-        NSColor(srgbRed: 0.08, green: 0.10, blue: 0.16, alpha: 1).setFill()
-        NSRect(
-            x: 0,
-            y: height - pinnedBand,
-            width: page.width,
-            height: pinnedBand
-        ).fill()
-        NSGraphicsContext.restoreGraphicsState()
-        return rep.cgImage
+        context.setFillColor(CGColor(srgbRed: 0.08, green: 0.10, blue: 0.16, alpha: 1))
+        context.fill(CGRect(x: 0, y: height - pinnedBand, width: page.width, height: pinnedBand))
+        if bottomBand > 0 {
+            context.setFillColor(CGColor(srgbRed: 0.14, green: 0.16, blue: 0.22, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: page.width, height: bottomBand))
+        }
+        return context.makeImage()
     }
 
     private static func makeScrollStitchImage(
@@ -5299,6 +5300,71 @@ enum OverlaySelfTest {
             )
         } else {
             check("scroll: build the pinned-band fixtures", false)
+        }
+
+        // A window selected for scrolling capture has a title bar and usually a
+        // status bar that never move. Those must not stop the session and must
+        // not be cropped away: the frames simply stitch.
+        //
+        // One transition is what used to fail — the fixed bars made every
+        // displacement look wrong, so the first new frame was rejected and the
+        // session declared the page unscrollable.
+        if let windowPage = makeStripedPage(width: 240, height: 1_400),
+           let windowA = makeViewport(
+               from: windowPage, offset: 0, height: 600,
+               pinnedBand: 40, bottomBand: 40
+           ),
+           let windowB = makeViewport(
+               from: windowPage, offset: 150, height: 600,
+               pinnedBand: 40, bottomBand: 40
+           ),
+           let windowStore = ScrollStitchStore(windowA),
+           let windowRaster = ScrollStitcher.SampledRaster(windowB) {
+            let windowMatch = ScrollStitcher.findMatch(
+                existing: windowStore.sampled,
+                next: windowRaster,
+                maxSearch: 600,
+                minimumOverlap: 40
+            )
+            check(
+                "scroll-window: fixed title/status bars do not stop the session",
+                windowMatch != nil && windowMatch?.overlap == 450,
+                "overlap=\(windowMatch?.overlap ?? -1) expected=450"
+            )
+            if let overlap = windowMatch?.overlap {
+                _ = windowStore.append(windowB, droppingTop: overlap)
+            }
+            check(
+                "scroll-window: the window frame is appended, not rejected",
+                windowStore.grew && windowStore.height == 750,
+                "height=\(windowStore.height) grew=\(windowStore.grew)"
+            )
+            if let composed = windowStore.composed() {
+                let stitchedBottom = pixel(
+                    composed,
+                    x: composed.width / 2,
+                    y: composed.height - 1
+                )
+                let newestBottom = pixel(
+                    windowB,
+                    x: windowB.width / 2,
+                    y: windowB.height - 1
+                )
+                check(
+                    "scroll-window: the stitch keeps the full width and ends on the newest row",
+                    composed.width == windowPage.width
+                        && stitchedBottom != nil && newestBottom != nil
+                        && abs(stitchedBottom!.r - newestBottom!.r) <= 8
+                        && abs(stitchedBottom!.g - newestBottom!.g) <= 8
+                        && abs(stitchedBottom!.b - newestBottom!.b) <= 8,
+                    "composed=\(composed.width)×\(composed.height) "
+                        + "bottom=\(String(describing: stitchedBottom))"
+                )
+            } else {
+                check("scroll-window: the stitch composes", false)
+            }
+        } else {
+            check("scroll-window: build the window fixtures", false)
         }
 
         // The live preview band must show the **newest** rows at the well's
