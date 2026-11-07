@@ -51,12 +51,13 @@ struct AlbumPage: View {
                             .contextMenu {
                                 Button("复制") { model.copy(entry.item, paste: false) }
                                 Button("钉在屏幕上") { model.pinToScreen(entry.item) }
-                                Button("在 Finder 中显示") {
-                                    let url = AlbumStore.fileURL(for: entry.record.id)
-                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                Button("在照片中查看") {
+                                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Photos") {
+                                        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+                                    }
                                 }
                                 Divider()
-                                Button("从相册移除", role: .destructive) {
+                                Button("从记录中移除（照片里保留）", role: .destructive) {
                                     model.removeFromAlbum(entry.record)
                                     if selection == entry.record.id { selection = nil }
                                 }
@@ -74,16 +75,24 @@ struct AlbumPage: View {
     }
 
     private func header(count: Int) -> some View {
-        VStack(alignment: .leading, spacing: SettingsPageMetrics.headerTitleSpacing) {
-            Text("相册")
-                .font(.system(size: 26, weight: .bold))
-            Text(
-                count == 0
-                    ? "监听文件夹里的新截图会自动收进这里。"
-                    : "\(count) 张图片。右键可以复制、钉图或移出相册。"
-            )
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: SettingsPageMetrics.headerTitleSpacing) {
+                Text("相册")
+                    .font(.system(size: 26, weight: .bold))
+                Text(
+                    count == 0
+                        ? "监听文件夹里的新截图会自动存进「照片」App。"
+                        : "\(count) 张已存入「照片」。右键可以复制、钉图或从记录里移除。"
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            NeutralCapsuleButton(title: "打开照片", help: "打开系统的「照片」App") {
+                if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Photos") {
+                    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+                }
+            }
         }
     }
 
@@ -99,7 +108,7 @@ struct AlbumPage: View {
                     color: SectionPalette.album,
                     title: "监听一个文件夹",
                     subtitle: model.settings.autoImportEnabled
-                        ? "已开启：新截图会自动收进相册"
+                        ? "已开启：新截图会自动存进「照片」"
                         : "在「文件夹监听」里选择文件夹并开启"
                 ) {
                     NeutralCapsuleButton(title: "去设置", help: "打开本页的「文件夹监听」") {
@@ -110,8 +119,8 @@ struct AlbumPage: View {
                 GroupRow(
                     symbol: "clock.arrow.circlepath",
                     color: SectionPalette.history,
-                    title: "从历史记录添加",
-                    subtitle: "在历史记录里右键一张图片 →「加入相册」"
+                    title: "从历史记录存档",
+                    subtitle: "在历史记录里右键一张图片 →「存入「照片」」"
                 )
             }
         }

@@ -134,10 +134,10 @@ struct ClipRowView: View {
         }
         if item.hasImage {
             Button("钉在屏幕上") { model.pinToScreen(item) }
-            if model.isInAlbum(item) {
-                Button("已在相册中") {}.disabled(true)
+            if model.isSavedToPhotos(item) {
+                Button("已存入「照片」") {}.disabled(true)
             } else {
-                Button("加入相册") { _ = model.addToAlbum(item) }
+                Button("存入「照片」") { model.saveToPhotos(item) }
             }
         }
 

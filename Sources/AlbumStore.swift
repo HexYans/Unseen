@@ -1,15 +1,15 @@
 import AppKit
 import Foundation
 
-/// On-disk mirror of the album: one folder of PNGs, plus a small JSON index so
-/// the album survives a wipe of the history database.
+/// Local record of screenshots that were saved into **Apple Photos**.
 ///
-/// The album is *not* a second database. Every entry is also a normal history
-/// row — the user can search it, copy it, pin it — so the album's own storage
-/// only needs to answer "which history rows are in the album, in what order, and
-/// where did they come from". That is what `AlbumRecord` is: a pointer plus the
-/// original file name and folder, which makes the provenance visible in the
-/// UI ("来自 ~/Desktop/截图").
+/// The pictures themselves live in 照片 — this store is only an index so the
+/// 相册 page can show what was imported, when, and from which folder, without
+/// asking Photos to enumerate the user's library (which would need read access
+/// the app deliberately does not request).
+///
+/// Every entry also points at a normal history row, so 复制 / 钉图 keep working
+/// from the grid. The local PNG copy exists only for the thumbnails on that page.
 ///
 /// Images live in `…/Application Support/Unseen/Album/` as
 /// `<uuid>.png`. Deleting an album entry deletes its file; the JSON index is
@@ -28,6 +28,9 @@ enum AlbumStore {
         /// screenshots taken by the app itself.
         var sourceName: String?
         var sourceFolder: String?
+        /// `PHAsset` local identifier returned by Photos, when it gave us one.
+        /// Useful for diagnostics; the UI does not depend on it.
+        var photoAssetID: String?
 
         /// Provenance line for the UI, e.g. "来自 桌面/截图".
         var originText: String? {
@@ -81,7 +84,8 @@ enum AlbumStore {
         pngData: Data,
         itemID: Int64 = -1,
         sourceName: String? = nil,
-        sourceFolder: String? = nil
+        sourceFolder: String? = nil,
+        photoAssetID: String? = nil
     ) -> AlbumRecord? {
         let fm = FileManager.default
         // The record id is chosen *before* the file so the PNG can be named
@@ -92,7 +96,8 @@ enum AlbumStore {
             itemID: itemID,
             addedAt: Date(),
             sourceName: sourceName,
-            sourceFolder: sourceFolder
+            sourceFolder: sourceFolder,
+            photoAssetID: photoAssetID
         )
         do {
             try fm.createDirectory(at: albumDirectory, withIntermediateDirectories: true)

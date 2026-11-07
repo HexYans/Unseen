@@ -10,8 +10,12 @@ final class AppModel {
     let settings: AppSettings
     /// Images pinned onto the screen (钉图).
     let pinboard: Pinboard
-    /// Watches the user's chosen folder and imports new screenshots into 相册.
+    /// Watches the user's chosen folder and saves new screenshots into 照片.
     let folderWatcher: FolderWatcher
+
+    /// The system photo library, injectable for the self-test (which must not
+    /// trigger a real 照片 permission prompt).
+    let photos: PhotosImporting
 
     /// Album entries, newest first. Mirrors `AlbumStore` on disk; reloaded by
     /// `reloadAlbum()` after any add/delete.
@@ -55,6 +59,9 @@ final class AppModel {
     @ObservationIgnored var onRequestOpenPanel: (() -> Void)?
     /// Jump to 设置 → 相册 (used by the album page's "去设置" button).
     @ObservationIgnored var onRequestOpenAlbumSettings: (() -> Void)?
+    /// Show a one-off message (used when saving to 照片 fails, so the click is
+    /// not silent). Wired to an alert by `AppDelegate`.
+    @ObservationIgnored var onRequestShowMessage: ((String) -> Void)?
 
     var selectedItem: ClipItem? {
         filteredItems.indices.contains(selectedIndex) ? filteredItems[selectedIndex] : nil
@@ -102,10 +109,14 @@ final class AppModel {
 
     /// Where the pinned-image records live. Normally the app's own defaults;
 
-    init(settings: AppSettings = AppSettings()) {
+    init(
+        settings: AppSettings = AppSettings(),
+        photos: PhotosImporting = SystemPhotosLibrary()
+    ) {
         self.settings = settings
+        self.photos = photos
         self.pinboard = Pinboard()
-        self.folderWatcher = FolderWatcher()
+        self.folderWatcher = FolderWatcher(photos: photos)
 
         let directory = Self.resolveStorageDirectory()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -380,55 +391,66 @@ final class AppModel {
         DebugLog.log("album: backfilled \(extra.count) history row(s) for the album")
     }
 
-    /// Add one history row to the album. Used by the 历史记录 context menu and
-    /// by the folder watcher (which writes the row first, then points at it).
-    @discardableResult
-    func addToAlbum(_ item: ClipItem, sourceName: String? = nil, sourceFolder: String? = nil) -> Bool {
+    /// Save one history image into **Apple Photos**.
+    ///
+    /// Async work happens in a task because `PHPhotoLibrary.performChanges` is
+    /// async; the menu action cannot await, so a failure surfaces through
+    /// `onRequestShowMessage` (an alert) instead of silently doing nothing.
+    func saveToPhotos(_ item: ClipItem) {
         guard item.hasImage else {
-            lastError = "这条记录不是图片，无法加入相册"
-            return false
+            onRequestShowMessage?("这张记录不是图片，无法存入「照片」。")
+            return
         }
         guard let data = fullImage(for: item), !data.isEmpty else {
-            // Report instead of silently returning false: the menu item used to
-            // do nothing at all when the history blob could not be read.
-            lastError = "读取图片失败，无法加入相册"
-            DebugLog.log("album: add failed for item \(item.id) (image bytes unreadable)")
-            return false
+            onRequestShowMessage?("读取图片失败，无法存入「照片」。")
+            DebugLog.log("photos: cannot read image bytes for item \(item.id)")
+            return
         }
         if AlbumStore.load(for: item.id) != nil {
-            // Already in — keep the row visible rather than pretending to fail.
-            reloadAlbum()
-            return true
+            // Already saved once; saving again would duplicate it in 照片.
+            onRequestShowMessage?("这张图片已经存入「照片」了。")
+            return
         }
-        guard AlbumStore.save(
-            pngData: data,
-            itemID: item.id,
-            sourceName: sourceName,
-            sourceFolder: sourceFolder
-        ) != nil else {
-            lastError = "写入相册失败（磁盘空间或权限）"
-            DebugLog.log("album: add failed for item \(item.id) (album write failed)")
-            return false
+
+        let name = "Unseen-\(item.id).png"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            switch await self.photos.addImage(data, filename: name) {
+            case .added(let assetID):
+                self.recordPhotoImport(
+                    data,
+                    sourceName: nil,
+                    sourceFolder: nil,
+                    photoAssetID: assetID
+                )
+                // Keep the history row out of the trimmer's way, otherwise a busy
+                // clipboard could drop it and the grid tile would lose its row.
+                self.protectFromTrimming(item)
+            case .denied:
+                self.lastError = "没有「照片」访问权限。"
+                self.onRequestShowMessage?(
+                    "没有「照片」访问权限。\n请到 系统设置 → 隐私与安全性 → 照片 中允许 Unseen。"
+                )
+            case .failed(let message):
+                self.lastError = "保存到「照片」失败：\(message)"
+                self.onRequestShowMessage?("保存到「照片」失败：\(message)")
+            }
         }
-        // Adding from 历史记录 means the row must stay out of the trimmer's way,
-        // otherwise a busy clipboard could drop it minutes later and the album
-        // tile would lose its history row.
-        protectFromTrimming(item)
-        reloadAlbum()
-        DebugLog.log("album: added item \(item.id)")
-        return true
     }
 
-    func isInAlbum(_ item: ClipItem) -> Bool {
+    /// True when this history row already has a record of being saved to 照片.
+    func isSavedToPhotos(_ item: ClipItem) -> Bool {
         AlbumStore.load(for: item.id) != nil
     }
 
     /// Persist a PNG that did not come from the clipboard (folder import): it
     /// becomes a normal history row first, then an album entry pointing at it.
-    func ingestAlbumImage(
+    @discardableResult
+    func recordPhotoImport(
         _ pngData: Data,
         sourceName: String?,
-        sourceFolder: String?
+        sourceFolder: String?,
+        photoAssetID: String?
     ) -> Bool {
         guard let database else { return false }
         let payload = ClipPayload(
@@ -448,7 +470,8 @@ final class AppModel {
                 pngData: pngData,
                 itemID: id,
                 sourceName: sourceName,
-                sourceFolder: sourceFolder
+                sourceFolder: sourceFolder,
+                photoAssetID: photoAssetID
             ) != nil else { return false }
             reloadAlbum()
             return true
@@ -563,6 +586,16 @@ final class AppModel {
             return
         }
         folderWatcher.restart(watching: settings.watchedFolderPath)
+        // Turning the feature on is the moment to ask 照片 for add-only access:
+        // doing it here means the prompt appears while the user is looking at
+        // the switch, not silently on the first screenshot hours later.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let granted = await self.photos.requestAccess()
+            if !granted {
+                self.folderWatcher.reportPermissionDenied()
+            }
+        }
     }
 
     /// Called after the hotkey preference changes.

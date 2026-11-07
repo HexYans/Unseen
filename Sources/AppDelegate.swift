@@ -135,6 +135,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onRequestApplyActivationPolicy = { [weak self] in self?.applyActivationPolicy() }
         // 相册: the watcher's optional "打开面板", and the album page's "去设置".
         model.onRequestOpenPanel = { [weak self] in self?.panelController.show() }
+        model.onRequestShowMessage = { [weak self] message in
+            let alert = NSAlert()
+            alert.messageText = "无法存入「照片」"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好")
+            if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+                alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+        }
         model.onRequestOpenAlbumSettings = { [weak self] in
             // One album page now: jump to it and land on 文件夹监听.
             self?.navigation.item = .album

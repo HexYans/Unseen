@@ -230,8 +230,8 @@ struct ClipPreviewView: View {
             PreviewActionButton(title: "粘贴") { model.copy(item, paste: true) }
             if item.hasImage {
                 PreviewActionButton(title: "钉在屏幕上") { model.pinToScreen(item) }
-                if !model.isInAlbum(item) {
-                    PreviewActionButton(title: "加入相册") { _ = model.addToAlbum(item) }
+                if !model.isSavedToPhotos(item) {
+                    PreviewActionButton(title: "存入照片") { model.saveToPhotos(item) }
                 }
             }
             Spacer(minLength: 8)

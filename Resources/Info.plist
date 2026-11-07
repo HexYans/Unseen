@@ -35,6 +35,8 @@
 	<false/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Hex Yans</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>把截图自动保存到「照片」App。只会添加图片，不会读取或修改你的其他照片。</string>
 	<key>NSCameraUsageDescription</key>
 	<string>录屏时把摄像头画面作为画中画显示在屏幕角落。不录屏时只有你手动开启才会使用摄像头。</string>
 	<key>NSSupportsAutomaticTermination</key>

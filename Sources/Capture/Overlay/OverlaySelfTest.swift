@@ -125,7 +125,7 @@ enum OverlaySelfTest {
         runHoverHighlightTests(into: outputDirectory)
         runPreviewPlateTests(into: outputDirectory)
         runAppearanceTopicTests()
-        runAlbumWatcherTests()
+        await runAlbumWatcherTests()
         runGlassSurfaceTests(into: outputDirectory)
         runDarkAppearanceAudit(into: outputDirectory)
         runPresetSizeTests()
@@ -13528,11 +13528,58 @@ enum OverlaySelfTest {
     /// directory instead of assertions about constants: they import a file,
     /// prove the album index grew, and prove the keep/delete switch does what it
     /// says.
-    private static func runAlbumWatcherTests() {
-        print("[album] --- 监听文件夹 → 相册 ---")
+    /// A stand-in for the system photo library.
+    ///
+    /// The real `PHPhotoLibrary` would raise a TCC prompt the moment a headless
+    /// self-test touches it, so the whole import path is driven through this
+    /// fake instead: it records what would have been sent to 照片 and can be told
+    /// to deny or fail.
+    private actor FakePhotos: PhotosImporting {
+        enum Mode {
+            case succeed
+            case deny
+            case fail(String)
+        }
+        private var mode: Mode = .succeed
+        private var savedBytes: [Data] = []
+        private var filenameCounts: [String: Int] = [:]
+
+        var savedCount: Int { savedBytes.count }
+        var savedFilenames: [String] {
+            filenameCounts.sorted { $0.value > $1.value }.map(\.key)
+        }
+
+        func setMode(_ mode: Mode) { self.mode = mode }
+        func requestAccess() async -> Bool { true }
+        func reset() {
+            savedBytes = []
+            filenameCounts = [:]
+            mode = .succeed
+        }
+
+        func addImage(_ pngData: Data, filename: String?) async -> PhotosLibrary.Outcome {
+            switch mode {
+            case .succeed:
+                savedBytes.append(pngData)
+                filenameCounts[filename ?? "?", default: 0] += 1
+                return .added(localIdentifier: "fake-\(UUID().uuidString)")
+            case .deny:
+                return .denied
+            case .fail(let message):
+                return .failed(message)
+            }
+        }
+    }
+
+    /// 相册 = Apple Photos. These checks drive the whole folder-watch → 照片 path
+    /// through `FakePhotos`, so they assert *behaviour* (what gets written, when
+    /// a source file may be deleted, what happens on a denial) instead of
+    /// Photos framework internals.
+    private static func runAlbumWatcherTests() async {
+        print("[album] --- 监听文件夹 → 照片 ---")
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("unseen-album-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("unseen-photos-\(UUID().uuidString)", isDirectory: true)
         let watched = root.appendingPathComponent("watched", isDirectory: true)
         let storage = root.appendingPathComponent("support", isDirectory: true)
         let previousHome = ProcessInfo.processInfo.environment["UNSEEN_HOME"]
@@ -13546,36 +13593,37 @@ enum OverlaySelfTest {
             try fm.createDirectory(at: watched, withIntermediateDirectories: true)
             try fm.createDirectory(at: storage, withIntermediateDirectories: true)
         } catch {
-            check("album: create temp folders", false, "\(error)")
+            check("photos: create temp folders", false, "\(error)")
             return
         }
 
-        // A real PNG, so the import path decodes and re-encodes an actual image.
-        let png: Data
-        let image = NSImage(size: NSSize(width: 120, height: 80))
-        image.lockFocus()
-        NSColor.systemPink.setFill()
-        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 120, height: 80)).fill()
-        image.unlockFocus()
-        png = image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?
-            .representation(using: .png, properties: [:]) } ?? Data()
-        check("album: the fixture is a real PNG", !png.isEmpty, "bytes=\(png.count)")
+        /// A real PNG of the given colour/size, so the import path decodes and
+        /// re-encodes actual image data.
+        func makePNG(width: CGFloat, height: CGFloat, colour: NSColor) -> Data {
+            let image = NSImage(size: NSSize(width: width, height: height))
+            image.lockFocus()
+            colour.setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
+            image.unlockFocus()
+            return image.tiffRepresentation
+                .flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) } ?? Data()
+        }
 
-        let fileA = watched.appendingPathComponent("shot-a.png")
-        let fileB = watched.appendingPathComponent("shot-b.png")
+        let png = makePNG(width: 120, height: 80, colour: .systemPink)
+        check("photos: the fixture is a real PNG", !png.isEmpty, "bytes=\(png.count)")
+
+        let fileA = watched.appendingPathComponent("existing.png")
         try? png.write(to: fileA)
-        try? png.write(to: fileB)
 
         check(
-            "album: image extensions cover what screenshots actually produce",
+            "photos: image extensions cover what screenshots actually produce",
             FolderWatcher.imageExtensions.isSuperset(of: ["png", "jpg", "jpeg", "heic", "tiff", "webp"]),
             "ext=\(FolderWatcher.imageExtensions.sorted())"
         )
 
-        // A model with the watcher on, pointed at the temp folder.
-        let suiteName = "UnseenAlbumWatcher-\(UUID().uuidString)"
+        let suiteName = "UnseenPhotos-\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
-            check("album: create isolated defaults", false)
+            check("photos: create isolated defaults", false)
             return
         }
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -13587,152 +13635,168 @@ enum OverlaySelfTest {
         settings.autoImportOpenPanel = false
         settings.maxItems = 500
 
-        let model = AppModel(settings: settings)
-        model.stopMonitoring()          // no clipboard polling during the check
+        let fake = FakePhotos()
+        let model = AppModel(settings: settings, photos: fake)
+        model.stopMonitoring()
         defer { model.folderWatcher.stop(); model.stopMonitoring() }
 
-        // Turning the feature on must not Hoover up what was already there.
+        // 1. Turning the feature on must not Hoover up what was already there.
         model.folderWatcher.restart(watching: watched.path)
-        model.folderWatcher.scanNow()
+        await model.folderWatcher.scanNowAndWait()
+        let savedAfterBaseline = await fake.savedCount
         check(
-            "album: files present before watching are not imported",
-            model.album.isEmpty && fm.fileExists(atPath: fileA.path),
-            "album=\(model.album.count) fileStillThere=\(fm.fileExists(atPath: fileA.path))"
+            "photos: files present before watching are not sent to 照片",
+            savedAfterBaseline == 0 && fm.fileExists(atPath: fileA.path),
+            "saved=\(savedAfterBaseline) fileStillThere=\(fm.fileExists(atPath: fileA.path))"
         )
 
-        // A file that appears *after* the watcher starts is imported.
+        // 2. A file that appears afterwards is written to 照片.
         let fileNew = watched.appendingPathComponent("shot-new.png")
         try? png.write(to: fileNew)
-        model.folderWatcher.scanNow()
+        await model.folderWatcher.scanNowAndWait()
+        let savedAfterNew = await fake.savedCount
+        let namesAfterNew = await fake.savedFilenames
         check(
-            "album: a new file is imported into the album",
-            model.album.count == 1 && model.album.first?.sourceName == "shot-new.png",
-            "album=\(model.album.count) name=\(model.album.first?.sourceName ?? "-")"
+            "photos: a new file is written to the photo library",
+            savedAfterNew == 1 && namesAfterNew == ["shot-new.png"],
+            "saved=\(savedAfterNew) names=\(namesAfterNew)"
         )
         check(
-            "album: 保留原文件 keeps the source file",
+            "photos: 保留原文件 keeps the source file",
             fm.fileExists(atPath: fileNew.path),
             "exists=\(fm.fileExists(atPath: fileNew.path))"
         )
         check(
-            "album: the entry points at a real history row",
+            "photos: the import is recorded so the 相册 page can show it",
+            model.album.count == 1
+                && model.album.first?.sourceName == "shot-new.png"
+                && (model.album.first?.photoAssetID?.hasPrefix("fake-") ?? false),
+            "records=\(model.album.count) asset=\(model.album.first?.photoAssetID ?? "-")"
+        )
+        check(
+            "photos: the record points at a real history row",
             (model.album.first.map { $0.itemID > 0 } ?? false)
                 && model.items.contains { $0.id == model.album.first?.itemID && $0.hasImage },
             "itemID=\(model.album.first?.itemID ?? -1)"
         )
-        let albumFile = model.album.first.map { AlbumStore.fileURL(for: $0.id) }
+
+        // 3. Rescanning the same file must not import it twice.
+        await model.folderWatcher.scanNowAndWait()
+        let savedAfterRescan = await fake.savedCount
         check(
-            "album: the PNG is copied into the album folder",
-            albumFile.map { fm.fileExists(atPath: $0.path) } ?? false,
-            "path=\(albumFile?.lastPathComponent ?? "-")"
+            "photos: rescanning the same file does not duplicate it",
+            savedAfterRescan == 1 && model.album.count == 1,
+            "saved=\(savedAfterRescan) records=\(model.album.count)"
         )
 
-        // The same file twice must not create a second entry.
-        model.folderWatcher.scanNow()
-        check(
-            "album: rescanning the same file does not duplicate it",
-            model.album.count == 1,
-            "album=\(model.album.count)"
-        )
-
-        // keepOriginal = false → the source file is removed, but only because the
-        // import succeeded.
+        // 4. keepOriginal = false → delete the source, but only after 照片 took it.
         settings.autoImportKeepOriginal = false
         model.folderWatcher.restart(watching: watched.path)   // baseline resets
-        // Different bytes from shot-new: the history table de-dupes by content
-        // hash, so reusing the same PNG would collapse the second import into
-        // the first row and the counts below would be meaningless.
-        let secondImage = NSImage(size: NSSize(width: 90, height: 140))
-        secondImage.lockFocus()
-        NSColor.systemTeal.setFill()
-        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 90, height: 140)).fill()
-        secondImage.unlockFocus()
-        let secondPNG = secondImage.tiffRepresentation
-            .flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) } ?? png
         let fileMove = watched.appendingPathComponent("shot-move.png")
-        try? secondPNG.write(to: fileMove)
-        model.folderWatcher.scanNow()
+        try? makePNG(width: 90, height: 140, colour: .systemTeal).write(to: fileMove)
+        await model.folderWatcher.scanNowAndWait()
+        let savedAfterMove = await fake.savedCount
         check(
-            "album: 保留原文件=off removes the source after a successful import",
-            !fm.fileExists(atPath: fileMove.path) && model.album.count == 2,
-            "exists=\(fm.fileExists(atPath: fileMove.path)) album=\(model.album.count)"
+            "photos: 保留原文件=off removes the source after 照片 accepted it",
+            !fm.fileExists(atPath: fileMove.path) && savedAfterMove == 2 && model.album.count == 2,
+            "exists=\(fm.fileExists(atPath: fileMove.path)) saved=\(savedAfterMove) records=\(model.album.count)"
         )
 
-        // A non-image in the folder is ignored while 只导入图片 is on.
+        // 5. 照片 denies access → nothing recorded, source untouched, clear error.
+        await fake.setMode(.deny)
+        model.folderWatcher.restart(watching: watched.path)
+        let fileDenied = watched.appendingPathComponent("denied.png")
+        try? makePNG(width: 60, height: 60, colour: .systemGray).write(to: fileDenied)
+        await model.folderWatcher.scanNowAndWait()
+        check(
+            "photos: a denied permission keeps the file and records nothing",
+            fm.fileExists(atPath: fileDenied.path)
+                && model.album.count == 2
+                && (model.folderWatcher.lastError?.contains("照片") ?? false),
+            "exists=\(fm.fileExists(atPath: fileDenied.path)) records=\(model.album.count) "
+                + "error=\(model.folderWatcher.lastError ?? "-")"
+        )
+
+        // 6. A write failure behaves the same way (retry later, never delete).
+        await fake.setMode(.fail("boom"))
+        model.folderWatcher.restart(watching: watched.path)
+        let fileFail = watched.appendingPathComponent("failed.png")
+        try? makePNG(width: 50, height: 90, colour: .systemOrange).write(to: fileFail)
+        await model.folderWatcher.scanNowAndWait()
+        check(
+            "photos: a failed write keeps the file and reports the reason",
+            fm.fileExists(atPath: fileFail.path)
+                && model.album.count == 2
+                && (model.folderWatcher.lastError?.contains("boom") ?? false),
+            "exists=\(fm.fileExists(atPath: fileFail.path)) records=\(model.album.count) "
+                + "error=\(model.folderWatcher.lastError ?? "-")"
+        )
+
+        // 7. Non-image files are ignored.
+        await fake.setMode(.succeed)
+        model.folderWatcher.restart(watching: watched.path)
         let notImage = watched.appendingPathComponent("notes.txt")
         try? Data("hello".utf8).write(to: notImage)
-        model.folderWatcher.scanNow()
+        await model.folderWatcher.scanNowAndWait()
         check(
-            "album: non-image files are ignored",
+            "photos: non-image files are ignored",
             model.album.count == 2 && fm.fileExists(atPath: notImage.path),
-            "album=\(model.album.count)"
+            "records=\(model.album.count)"
         )
 
-        // Deleting an entry removes its file and its index row, and leaves the
-        // history row alone (a pasted image must not disappear behind the
-        // user's back).
+        // 8. Removing a record only forgets the local entry; 照片 keeps the photo,
+        //    and the history row is untouched.
         if let first = model.album.last {
             let historyCountBefore = model.totalCount
             model.removeFromAlbum(first)
             check(
-                "album: removing an entry drops its album file only",
-                model.album.count == 1
-                    && !fm.fileExists(atPath: AlbumStore.fileURL(for: first.id).path)
-                    && model.totalCount == historyCountBefore,
-                "album=\(model.album.count) history=\(model.totalCount)/\(historyCountBefore)"
+                "photos: removing a record does not touch 照片 or history",
+                model.album.count == 1 && model.totalCount == historyCountBefore,
+                "records=\(model.album.count) history=\(model.totalCount)/\(historyCountBefore)"
             )
         }
 
-        // The index survives a reload: the grid reads it back, not a cache.
-        let onDisk = AlbumStore.load()
+        // 9. The on-disk index survives a reload.
         check(
-            "album: the on-disk index matches what the model shows",
-            onDisk.count == model.album.count,
-            "disk=\(onDisk.count) model=\(model.album.count)"
+            "photos: the on-disk index matches what the model shows",
+            AlbumStore.load().count == model.album.count,
+            "disk=\(AlbumStore.load().count) model=\(model.album.count)"
         )
 
-        // Turning the master switch off must actually stop the timer.
+        // 10. The manual path (历史记录 → 存入「照片」) uses the same writer.
+        await fake.reset()
+        model.reload()
+        if let imageRow = model.items.first(where: { $0.hasImage && !model.isSavedToPhotos($0) }) {
+            model.saveToPhotos(imageRow)
+            // Let the task run and the Photos callback land.
+            var savedByMenu = await fake.savedCount
+            for _ in 0..<40 where savedByMenu == 0 {
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                savedByMenu = await fake.savedCount
+            }
+            check(
+                "photos: 存入「照片」 from 历史记录 writes one image and records it",
+                savedByMenu == 1 && model.isSavedToPhotos(imageRow),
+                "saved=\(savedByMenu) recorded=\(model.isSavedToPhotos(imageRow))"
+            )
+        } else {
+            check("photos: 存入「照片」 has an image row to test with", false, "no image row")
+        }
+
+        // 11. Stopping the watcher disarms the timer.
         model.folderWatcher.stop()
         check(
-            "album: stopping the watcher disarms it",
+            "photos: stopping the watcher disarms it",
             model.folderWatcher.isWatching == false,
             "watching=\(model.folderWatcher.isWatching)"
         )
 
-        // The manual path: 历史记录 → 右键 → 加入相册 must both write the record
-        // and leave it *visible* in the grid. The grid resolves records against
-        // loaded history rows, so a record whose row cannot be found renders as
-        // nothing — that was the "加了但相册还是空的" report.
-        model.reload()
-        if let firstImage = model.items.first(where: { $0.hasImage && !model.isInAlbum($0) }) {
-            let before = model.albumItems.count
-            let added = model.addToAlbum(firstImage)
-            let visible = model.albumItems.contains { $0.record.itemID == firstImage.id }
-            check(
-                "album: 加入相册 writes the record and the grid can resolve it",
-                added && visible && model.albumItems.count == before + 1,
-                "added=\(added) visible=\(visible) "
-                    + "before=\(before) after=\(model.albumItems.count)"
-            )
-            let inAlbumAgain = model.addToAlbum(firstImage)
-            check(
-                "album: adding the same row twice is a no-op, not a failure",
-                inAlbumAgain && model.albumItems.filter { $0.record.itemID == firstImage.id }.count == 1,
-                "again=\(inAlbumAgain) count=\(model.albumItems.filter { $0.record.itemID == firstImage.id }.count)"
-            )
-        } else {
-            check("album: 加入相册 has an image row to test with", false, "no un-albumed image row")
-        }
-
-        // 相册 is a content page with its own groups — not a settings page. If it
-        // were one, `SettingsSection.allCases` would grow and the settings
-        // sidebar would gain a duplicate 相册 row.
+        // 12. 相册 is a content page with its own groups — not a settings page.
         check(
-            "album: the page has its own three groups and is not a settings page",
-            AlbumPageGroup.all.map(\.title) == ["图片库", "文件夹监听", "导入行为"]
+            "photos: the page has its own three groups and is not a settings page",
+            AlbumPageGroup.all.map(\.title) == ["已存入照片", "文件夹监听", "导入行为"]
                 && !SettingsSection.allCases.contains { $0.rawValue == "album" },
-            "groups=\(AlbumPageGroup.all.map(\.title)) "
-                + "settings=\(SettingsSection.allCases.count)"
+            "groups=\(AlbumPageGroup.all.map(\.title)) settings=\(SettingsSection.allCases.count)"
         )
     }
 

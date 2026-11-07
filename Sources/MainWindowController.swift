@@ -467,7 +467,7 @@ enum AlbumPageGroup {
 
     /// Drawing order in the middle column, and the ids the right pane switches on.
     static let all: [PageGroup] = [
-        PageGroup(id: library, title: "图片库", symbol: "photo.on.rectangle.angled"),
+        PageGroup(id: library, title: "已存入照片", symbol: "photo.on.rectangle.angled"),
         PageGroup(id: folder, title: "文件夹监听", symbol: "folder.badge.plus"),
         PageGroup(id: behavior, title: "导入行为", symbol: "slider.horizontal.3")
     ]

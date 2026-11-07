@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import Observation
 
-/// Watches one folder and pulls new images into 相册 (the album).
+/// Watches one folder and saves new images into **Apple Photos** (相册).
 ///
 /// Why a poller instead of `FSEventStream` / `DispatchSource`: the user picks
 /// the folder at runtime, so a single long-lived stream would have to be torn
@@ -14,15 +14,15 @@ import Observation
 /// Behaviour is entirely driven by `AppSettings` so the user can choose:
 ///
 /// * **watchedFolderPath** — the folder to watch (empty = feature off)
-/// * **autoImportKeepOriginal** — keep the file after importing (off = move it
-///   into the album can't move, so we delete it; see below)
+/// * **autoImportKeepOriginal** — keep the file after importing (off = delete it
+///   once 照片 has accepted the image; see below)
 /// * **autoImportRespectSubfolders** — recurse into subfolders
 /// * **autoImportOnlyImages** — ignore non-image files (default on)
 /// * **autoImportOpenPanel** — reveal the history panel after an import
 ///
-/// Nothing is ever deleted unless `autoImportKeepOriginal` is off **and** the
-/// file was successfully read into the album first — a failed import never
-/// loses the user's file.
+/// Nothing is ever deleted unless `autoImportKeepOriginal` is off **and** Photos
+/// confirmed the image first — a denied permission or a failed write never loses
+/// the user's file.
 @MainActor
 @Observable
 final class FolderWatcher {
@@ -53,6 +53,13 @@ final class FolderWatcher {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var isScanning = false
     @ObservationIgnored private weak var model: AppModel?
+    /// Where images are written. Injectable so the self-test can drive the whole
+    /// import path without prompting for 照片 permission.
+    @ObservationIgnored private let photos: PhotosImporting
+
+    init(photos: PhotosImporting = SystemPhotosLibrary()) {
+        self.photos = photos
+    }
 
     /// Extensions treated as pictures. Everything else is skipped even when
     /// `autoImportOnlyImages` is off — the album only stores images.
@@ -123,22 +130,42 @@ final class FolderWatcher {
         DebugLog.log("folder watcher: watching \(path) every \(Self.scanInterval)s")
     }
 
-    /// Read the folder now — used by the 立即扫描 button in settings so the user
-    /// does not have to wait for the next tick.
+    /// Surface the "no 照片 permission" state from outside the scan loop (the
+    /// settings toggle asks for access, and this keeps one message in one place).
+    func reportPermissionDenied() {
+        lastError = "没有「照片」访问权限。请在 系统设置 → 隐私与安全性 → 照片 中允许 Unseen。"
+    }
+
+    /// Read the folder now — used by the 扫描 button so the user does not have to
+    /// wait for the next tick.
     func scanNow() {
-        scanOnce()
+        Task { @MainActor [weak self] in await self?.scanOnceNow() }
+    }
+
+    /// Testing hook: run one pass and wait for Photos + the local record to
+    /// finish, so assertions are not racing the async write.
+    func scanNowAndWait() async {
+        await scanOnceNow()
     }
 
     // MARK: - Scan
 
     private func scanOnce() {
+        Task { @MainActor [weak self] in await self?.scanOnceNow() }
+    }
+
+    private func scanOnceNow() async {
         guard let model, isWatching, !isScanning else { return }
         let path = (model.settings.watchedFolderPath as NSString).expandingTildeInPath
         guard !path.isEmpty else { return }
 
         isScanning = true
         defer { isScanning = false }
+        await importNewFiles(in: path)
+    }
 
+    private func importNewFiles(in path: String) async {
+        guard let model else { return }
         let recursive = model.settings.autoImportRespectSubfolders
         let onlyImages = model.settings.autoImportOnlyImages
         let keepOriginal = model.settings.autoImportKeepOriginal
@@ -162,16 +189,16 @@ final class FolderWatcher {
             }
             if seen[filePath] == signature { continue }
 
-            // Wait for the write to finish. A screenshot is often written in
-            // more than one step, and importing a half-written PNG produces a
-            // broken row. Two seconds of "size unchanged" is enough in practice.
+            // Wait for the write to finish: a screenshot is often written in
+            // more than one step, and importing half a PNG produces an asset the
+            // user cannot open.
             if !isSettled(path: filePath, size: size) { continue }
 
-            guard importFile(at: url, keepOriginal: keepOriginal) else { continue }
+            guard await importFile(at: url, keepOriginal: keepOriginal) else { continue }
             seen[filePath] = signature
             importedCount += 1
             lastImportedName = url.lastPathComponent
-            DebugLog.log("folder watcher: imported \(url.lastPathComponent)")
+            DebugLog.log("folder watcher: saved \(url.lastPathComponent) to 照片")
         }
     }
 
@@ -211,7 +238,11 @@ final class FolderWatcher {
 
     // MARK: - Import
 
-    private func importFile(at url: URL, keepOriginal: Bool) -> Bool {
+    /// Save one file into 照片, then (only on success) record it and optionally
+    /// remove the source. Returns false for anything that should be retried or
+    /// reported — a denied permission keeps the file and stops the pass from
+    /// spamming Photos with the same request.
+    private func importFile(at url: URL, keepOriginal: Bool) async -> Bool {
         guard let model else { return false }
         guard let data = try? Data(contentsOf: url), !data.isEmpty else {
             lastError = "无法读取：\(url.lastPathComponent)"
@@ -222,8 +253,8 @@ final class FolderWatcher {
             return false
         }
 
-        // Normalise to PNG so the album has one storage format, matching what
-        // every other image path in the app writes.
+        // Photos stores one canonical image per asset; normalising to PNG keeps
+        // the pixels identical to what the app shows in its own grid.
         let png: Data
         if url.pathExtension.lowercased() == "png" {
             png = data
@@ -236,31 +267,37 @@ final class FolderWatcher {
             return false
         }
 
-        // The album entry points at a *history row*, so the row must exist
-        // first. `ingestAlbumImage` does both: upsert the PNG into history and
-        // then record the album pointer.
-        guard model.ingestAlbumImage(
-            png,
-            sourceName: url.lastPathComponent,
-            sourceFolder: url.deletingLastPathComponent().path
-        ) else {
-            lastError = "无法写入相册：\(url.lastPathComponent)"
+        switch await photos.addImage(png, filename: url.lastPathComponent) {
+        case .added(let assetID):
+            // Photos has the picture; only now is it safe to record it locally
+            // and (if asked) delete the source.
+            model.recordPhotoImport(
+                png,
+                sourceName: url.lastPathComponent,
+                sourceFolder: url.deletingLastPathComponent().path,
+                photoAssetID: assetID
+            )
+            lastError = nil
+            if !keepOriginal {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    lastError = "已存入「照片」但无法删除原文件：\(url.lastPathComponent)"
+                }
+            }
+            if model.settings.autoImportOpenPanel {
+                model.onRequestOpenPanel?()
+            }
+            return true
+
+        case .denied:
+            lastError = "没有「照片」访问权限。请在 系统设置 → 隐私与安全性 → 照片 中允许 Unseen。"
+            // Stop this pass: every remaining file would fail the same way.
+            return false
+
+        case .failed(let message):
+            lastError = "保存到「照片」失败：\(message)"
             return false
         }
-
-        // Only now, after the bytes are safely in the album, may the original be
-        // removed. `keepOriginal` off means "move into the album".
-        if !keepOriginal {
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                lastError = "已导入但无法删除原文件：\(url.lastPathComponent)"
-            }
-        }
-
-        if model.settings.autoImportOpenPanel {
-            model.onRequestOpenPanel?()
-        }
-        return true
     }
 }
