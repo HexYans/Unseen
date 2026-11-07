@@ -216,11 +216,14 @@ enum ScrollStitcher {
         // concludes "this page does not scroll" and gives up on a page that
         // scrolls perfectly. Detect the bands first and search only the body
         // between them.
-        let bandLimit = max(1, height / 3)
-        let staticTop = staticRowsFromTop(existing: existing, next: next, limit: bandLimit)
-        let staticBottom = staticRowsFromBottom(existing: existing, next: next, limit: bandLimit)
-        let bodyStart = min(staticTop, height - minimumOverlap)
-        let bodyEnd = max(bodyStart + minimumOverlap, height - staticBottom)
+        let body = bodyRange(
+            existing: existing,
+            next: next,
+            height: height,
+            minimumOverlap: minimumOverlap
+        )
+        let bodyStart = body.start
+        let bodyEnd = body.end
         guard bodyEnd - bodyStart >= minimumOverlap else { return nil }
 
         // Displacement search. `shift` is how far the body moved between the
@@ -254,7 +257,8 @@ enum ScrollStitcher {
                 shift: shift,
                 bodyStart: bodyStart,
                 bodyEnd: bodyEnd,
-                sampledRows: 6
+                sampledRows: 6,
+                pinnedColumns: body.columns
             )
             if fraction <= 0.06 { coarse.append((fraction, shift)) }
             shift += 1
@@ -280,7 +284,8 @@ enum ScrollStitcher {
                 shift: candidate.shift,
                 bodyStart: bodyStart,
                 bodyEnd: bodyEnd,
-                sampledRows: sampleRows
+                sampledRows: sampleRows,
+                pinnedColumns: body.columns
             )
             guard fraction <= maximumDifferentFraction else { continue }
             let detailRows = spacedRows(
@@ -292,7 +297,8 @@ enum ScrollStitcher {
                 existing: existing,
                 next: next,
                 shift: candidate.shift,
-                rows: detailRows
+                rows: detailRows,
+                pinnedColumns: body.columns
             )
             guard detail.count >= minimumInformativePixels,
                   detail.mismatch <= maximumInformativeMismatch else { continue }
@@ -354,7 +360,8 @@ enum ScrollStitcher {
         shift: Int,
         bodyStart: Int,
         bodyEnd: Int,
-        sampledRows: Int
+        sampledRows: Int,
+        pinnedColumns: [Bool]? = nil
     ) -> Double {
         let range = shiftRows(shift: shift, bodyStart: bodyStart, bodyEnd: bodyEnd,
                               existingHeight: existing.height, nextHeight: next.height)
@@ -368,6 +375,11 @@ enum ScrollStitcher {
         for index in 0..<rowCount {
             let y = range.start + (index * span) / rowCount
             for column in 0..<columns {
+                // A pinned column never moves, so it can neither confirm nor
+                // deny a displacement — counting it just dilutes the evidence.
+                if let pinnedColumns, column < pinnedColumns.count, pinnedColumns[column] {
+                    continue
+                }
                 let a = next.rgb(column: column, y: y)
                 let b = existing.rgb(column: column, y: y + shift)
                 let delta = max(abs(a.0 - b.0), abs(a.1 - b.1), abs(a.2 - b.2))
@@ -477,7 +489,8 @@ enum ScrollStitcher {
         existing: SampledRaster,
         next: SampledRaster,
         shift: Int,
-        rows: [Int]
+        rows: [Int],
+        pinnedColumns: [Bool]? = nil
     ) -> (mismatch: Double, count: Int) {
         var informative = 0
         var mismatched = 0
@@ -485,6 +498,9 @@ enum ScrollStitcher {
             let aligned = y + shift
             guard aligned >= 0, aligned < existing.height else { continue }
             for column in 0..<next.columnCount {
+                if let pinnedColumns, column < pinnedColumns.count, pinnedColumns[column] {
+                    continue
+                }
                 guard isDetailed(next, column: column, y: y) else { continue }
                 informative += 1
                 var matched = false
@@ -875,6 +891,93 @@ enum ScrollStitcher {
             }
         }
         return true
+    }
+
+    /// Which rows and sampled columns are **screen-pinned** in this pair of
+    /// frames: identical at the same y (rows) or same x (columns) in both.
+    ///
+    /// iShot's scroll capture refuses to run on a window for exactly this
+    /// reason, and its matcher is the same shape as this one: a static band
+    /// inside the selection defeats a whole-frame displacement search. Rather
+    /// than only trimming bands off the top and bottom — which fails as soon as
+    /// the fixed part is a sidebar, a floating header in the middle, or taller
+    /// than a third of the frame — mark every pinned row and column and exclude
+    /// them from the comparison.
+    ///
+    /// Returns nil when the mask is degenerate (almost everything pinned, or
+    /// nothing pinned): then there is no useful body and the caller keeps the
+    /// plain edge-trimming behaviour.
+    static func staticMask(
+        existing: SampledRaster,
+        next: SampledRaster,
+        height: Int
+    ) -> (rows: [Bool], columns: [Bool])? {
+        guard height >= 2, next.columnCount >= 2 else { return nil }
+        let columns = next.columnCount
+
+        // Columns first: a pinned column is identical down its whole height.
+        // Sampling every 4th row keeps this cheap; a column that only looks
+        // static on those rows would have to be a flat colour, which carries no
+        // detail for the matcher anyway.
+        var columnPinned = [Bool](repeating: true, count: columns)
+        var pinnedColumns = 0
+        let rowStride = max(1, height / 48)
+        for column in 0..<columns {
+            var y = 0
+            while y < height {
+                guard existing.difference(from: next, column: column, y: y, otherY: y)
+                    <= differenceTolerance else {
+                    columnPinned[column] = false
+                    break
+                }
+                y += rowStride
+            }
+            if columnPinned[column] { pinnedColumns += 1 }
+        }
+        // All or nothing pinned means the mask says nothing useful.
+        guard pinnedColumns < columns else { return nil }
+
+        var rowPinned = [Bool](repeating: true, count: height)
+        var pinnedRows = 0
+        for y in 0..<height {
+            for column in 0..<columns where !columnPinned[column] {
+                guard existing.difference(from: next, column: column, y: y, otherY: y)
+                    <= differenceTolerance else {
+                    rowPinned[y] = false
+                    break
+                }
+            }
+            if rowPinned[y] { pinnedRows += 1 }
+        }
+        guard pinnedRows < height else { return nil }
+        // A page that is almost entirely static is not a scrolling page; leave
+        // the decision to the frozen-frame check instead of searching 2 rows.
+        guard pinnedRows * 10 <= height * 9 else { return nil }
+        return (rowPinned, columnPinned)
+    }
+
+    /// The body of a frame pair: first and last row that actually moves.
+    ///
+    /// Falls back to the historical edge trimming when no mask is available, so
+    /// a frame with no static part behaves exactly as before.
+    static func bodyRange(
+        existing: SampledRaster,
+        next: SampledRaster,
+        height: Int,
+        minimumOverlap: Int
+    ) -> (start: Int, end: Int, rows: [Bool]?, columns: [Bool]?) {
+        if let mask = staticMask(existing: existing, next: next, height: height),
+           let first = mask.rows.firstIndex(of: false),
+           let last = mask.rows.lastIndex(of: false),
+           last + 1 - first >= minimumOverlap {
+            return (first, last + 1, mask.rows, mask.columns)
+        }
+        let bandLimit = max(1, height / 3)
+        let staticTop = staticRowsFromTop(existing: existing, next: next, limit: bandLimit)
+        let staticBottom = staticRowsFromBottom(existing: existing, next: next, limit: bandLimit)
+        let start = min(staticTop, height - minimumOverlap)
+        let end = max(start + minimumOverlap, height - staticBottom)
+        return (start, end, nil, nil)
     }
 
     /// Leading rows that did not move, capped at `limit`.
@@ -1345,17 +1448,23 @@ final class ScrollStitchStore: @unchecked Sendable {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         context.interpolationQuality = .high
+        // `pieces` is oldest-first, so `reversed()` starts at the newest rows and
+        // they are drawn at y = 0 — the band's **bottom**. Stacking them upward
+        // from there is what makes the viewfinder read as the page being pulled
+        // up: the newest rows sit on the well's bottom edge, exactly like the
+        // finished image (`composed()` uses the same order). Drawing the newest
+        // piece at `bandHeight - pieceHeight` instead put it at the band's top,
+        // which is why the live preview looked like the new screenshot had been
+        // pasted above the old one.
         var drawn = 0.0
         for piece in pieces.reversed() {
+            guard drawn < bandHeight else { break }
             let pieceHeight = CGFloat(piece.rows) * scale
-            let bottom = bandHeight - drawn - pieceHeight
-            drawn += pieceHeight
-            if bottom + pieceHeight <= 0 { break }
             context.draw(
                 piece.image,
-                in: CGRect(x: 0, y: bottom, width: CGFloat(pixelWidth), height: pieceHeight)
+                in: CGRect(x: 0, y: drawn, width: CGFloat(pixelWidth), height: pieceHeight)
             )
-            if drawn >= bandHeight { break }
+            drawn += pieceHeight
         }
         guard let band = context.makeImage() else { return nil }
         return ScrollPreviewFrame(image: band, contentHeight: content)

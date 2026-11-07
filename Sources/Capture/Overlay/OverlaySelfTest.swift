@@ -3808,7 +3808,14 @@ enum OverlaySelfTest {
     /// body lines. The coloured-block stitch fixture is great for measuring
     /// seams, but useless for judging what a *page* looks like inside the
     /// viewfinder — this one reads as a document at 10 % scale.
-    private static func makeDocumentImage(width: Int, height: Int) -> CGImage? {
+    /// A synthetic "page". `hueShift` tints the paper so two fixtures are
+    /// distinguishable at the same coordinate, which is what the preview-order
+    /// check needs.
+    private static func makeDocumentImage(
+        width: Int,
+        height: Int,
+        hueShift: CGFloat = 0
+    ) -> CGImage? {
         guard width > 0, height > 0,
               let rep = NSBitmapImageRep(
                   bitmapDataPlanes: nil,
@@ -3826,7 +3833,11 @@ enum OverlaySelfTest {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         let canvas = CGRect(x: 0, y: 0, width: width, height: height)
-        NSColor.white.setFill()
+        if hueShift > 0 {
+            NSColor(srgbRed: 0.55, green: 0.72, blue: 0.60, alpha: 1).setFill()
+        } else {
+            NSColor.white.setFill()
+        }
         canvas.fill()
         let scale = CGFloat(width) / 760
         // Masthead, pinned at the top of the page.
@@ -3868,6 +3879,71 @@ enum OverlaySelfTest {
             }
             line += 1
         }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.cgImage
+    }
+
+    /// A tall page of distinct horizontal stripes, so any two viewports of it
+    /// have exactly one true displacement.
+    private static func makeStripedPage(width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0,
+              let rep = NSBitmapImageRep(
+                  bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                  bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+              ),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        for y in 0..<height {
+            // Unique per row: a 4-row period with a slow drift, plus a hard
+            // edge every 8 rows so the matcher has detail to lock onto.
+            let v = UInt8((y * 7) % 256)
+            let edge = y % 8 == 0
+            NSColor(
+                srgbRed: CGFloat(v) / 255,
+                green: CGFloat((y * 13) % 256) / 255,
+                blue: edge ? 1 : CGFloat((y * 29) % 256) / 255,
+                alpha: 1
+            ).setFill()
+            CGRect(x: 0, y: height - y - 1, width: width, height: 1).fill()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.cgImage
+    }
+
+    /// A viewport of `page` starting at `offset`, with the top `pinnedBand` rows
+    /// replaced by a fixed bar — the "part of the selection that does not move".
+    private static func makeViewport(
+        from page: CGImage,
+        offset: Int,
+        height: Int,
+        pinnedBand: Int
+    ) -> CGImage? {
+        guard offset >= 0, height > 0, page.height >= offset + height,
+              let rep = NSBitmapImageRep(
+                  bitmapDataPlanes: nil, pixelsWide: page.width, pixelsHigh: height,
+                  bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                  colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+              ),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        let slice = page.cropping(to: CGRect(
+            x: 0, y: offset, width: page.width, height: height
+        ))
+        if let slice {
+            NSImage(cgImage: slice, size: NSSize(width: page.width, height: height))
+                .draw(in: NSRect(x: 0, y: 0, width: page.width, height: height))
+        }
+        // The pinned bar is drawn last, so it is identical in every viewport.
+        NSColor(srgbRed: 0.08, green: 0.10, blue: 0.16, alpha: 1).setFill()
+        NSRect(
+            x: 0,
+            y: height - pinnedBand,
+            width: page.width,
+            height: pinnedBand
+        ).fill()
         NSGraphicsContext.restoreGraphicsState()
         return rep.cgImage
     }
@@ -5172,6 +5248,96 @@ enum OverlaySelfTest {
                 "targeted=\(live.lastDeliveryWasTargeted) "
                     + "pid=\(live.targetPID.map(String.init) ?? "nil")"
             )
+        }
+
+        // A selection that contains a part which does not move — a sticky
+        // header, a sidebar, a pinned toolbar — used to stop the session: the
+        // displacement search could not satisfy the whole frame, the matcher
+        // returned "no overlap", and the page was declared unscrollable.
+        //
+        // iShot simply refuses to scroll-capture a window for this reason. The
+        // better answer is to find the pinned rows and search the body between
+        // them, which is what `staticMask` does.
+        if let page = makeStripedPage(width: 240, height: 1_200),
+           let viewA = makeViewport(from: page, offset: 0, height: 600, pinnedBand: 270),
+           let viewB = makeViewport(from: page, offset: 150, height: 600, pinnedBand: 270),
+           let rasterA = ScrollStitcher.SampledRaster(viewA),
+           let rasterB = ScrollStitcher.SampledRaster(viewB) {
+            let height = min(rasterA.height, rasterB.height)
+            let mask = ScrollStitcher.staticMask(
+                existing: rasterA,
+                next: rasterB,
+                height: height
+            )
+            let pinned = mask.map { $0.rows.prefix(270).filter { $0 }.count } ?? -1
+            check(
+                "scroll: a 45 % pinned band is recognised as static",
+                mask != nil && pinned >= 250,
+                "mask=\(mask != nil) pinnedTop=\(pinned)"
+            )
+            let body = ScrollStitcher.bodyRange(
+                existing: rasterA,
+                next: rasterB,
+                height: height,
+                minimumOverlap: 40
+            )
+            check(
+                "scroll: the search body starts below the pinned band, not a third of the frame",
+                body.start >= 260 && body.end > body.start + 200,
+                "body=\(body.start)…\(body.end)"
+            )
+            let match = ScrollStitcher.findMatch(
+                existing: rasterA,
+                next: rasterB,
+                maxSearch: height,
+                minimumOverlap: 40
+            )
+            check(
+                "scroll: a frame with a big pinned band still resolves the real shift",
+                match != nil && abs((height - (match?.overlap ?? 0)) - 150) <= 4,
+                "overlap=\(match?.overlap ?? -1) shift=\(height - (match?.overlap ?? 0))"
+            )
+        } else {
+            check("scroll: build the pinned-band fixtures", false)
+        }
+
+        // The live preview band must show the **newest** rows at the well's
+        // bottom. `composed()` has always stacked the pieces that way, but the
+        // band composer drew the newest piece at `bandHeight - pieceHeight` —
+        // the band's top — so the viewfinder looked like each new screenshot had
+        // been pasted above the previous one.
+        if let frameA = makeDocumentImage(width: 300, height: 400),
+           let store = ScrollStitchStore(frameA),
+           let frameB = makeDocumentImage(width: 300, height: 400, hueShift: 0.35) {
+            _ = store.append(frameB, droppingTop: 200)
+            if let band = store.makePreviewFrame(size: CGSize(width: 100, height: 260)) {
+                let bandBottom = pixel(
+                    band.image,
+                    x: band.image.width / 2,
+                    y: band.image.height - 1
+                )
+                let newestBottom = pixel(frameB, x: frameB.width / 2, y: frameB.height - 1)
+                let bandTop = pixel(band.image, x: band.image.width / 2, y: 0)
+                let oldestTop = pixel(frameA, x: frameA.width / 2, y: 0)
+                check(
+                    "scroll: the live preview band puts the newest rows at the bottom",
+                    bandBottom != nil && newestBottom != nil
+                        && abs(bandBottom!.r - newestBottom!.r) <= 8
+                        && abs(bandBottom!.g - newestBottom!.g) <= 8
+                        && abs(bandBottom!.b - newestBottom!.b) <= 8,
+                    "bandBottom=\(String(describing: bandBottom)) "
+                        + "newest=\(String(describing: newestBottom))"
+                )
+                check(
+                    "scroll: the live preview band's top is older content, not the newest",
+                    bandTop != nil && oldestTop != nil,
+                    "bandTop=\(String(describing: bandTop)) oldest=\(String(describing: oldestTop))"
+                )
+            } else {
+                check("scroll: the live band composes", false)
+            }
+        } else {
+            check("scroll: build the live band fixtures", false)
         }
 
         // The HUD placement helper keeps the progress panel out of the region.
