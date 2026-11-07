@@ -90,6 +90,9 @@ struct MainView: View {
     private var middleColumn: some View {
         switch navigation.section {
         case .history, .pins: contentColumn
+        // 相册 has no list column: the grid *is* the content, so the middle
+        // column steps aside and the grid takes its place.
+        case .album: EmptyView()
         case .capture: captureToolColumn
         case .settings: groupColumn
         }
@@ -175,6 +178,7 @@ struct MainView: View {
         switch item {
         case .history: model.totalCount
         case .pins: model.pinboard.count
+        case .album: model.album.isEmpty ? nil : model.album.count
         default: nil
         }
     }
@@ -390,6 +394,7 @@ struct MainView: View {
         switch navigation.section {
         case .history: historyList
         case .pins: pinList
+        case .album: EmptyView()   // no list column: the grid fills the pane
         case .capture: EmptyView()
         case .settings: EmptyView()
         }
@@ -484,6 +489,8 @@ struct MainView: View {
             }
         case .pins:
             PinboardPage(model: model)
+        case .album:
+            AlbumPage(model: model)
         case .capture:
             // The middle column picked one of the four modes; the right pane is
             // that mode's *own* settings page, drawn in full (no group filter),

@@ -133,6 +133,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onHotKeyChanged = { [weak self] in self?.applyHotKeys() }
         model.onCameraSettingsChanged = { [weak self] in self?.capture.applyCameraSettings() }
         model.onRequestApplyActivationPolicy = { [weak self] in self?.applyActivationPolicy() }
+        // 相册: the watcher's optional "打开面板", and the album page's "去设置".
+        model.onRequestOpenPanel = { [weak self] in self?.panelController.show() }
+        model.onRequestOpenAlbumSettings = { [weak self] in
+            self?.navigation.item = .albumSettings
+            self?.mainWindow.show(section: .settings)
+        }
         // The status item is the "status bar red dot + timer" surface.
         capture.onRecordingChanged = { [weak self] state, elapsedText in
             self?.updateRecordingStatus(state: state, elapsedText: elapsedText)
@@ -197,6 +203,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             scheduleCaptureProbeIfRequested()
             return
+        }
+
+        // Support hook: fire one global-hotkey handler by name, then exit. Lets
+        // an automated check exercise a real hotkey path (open the panel, start
+        // a capture…) without synthesising key events, which needs its own
+        // Accessibility grant. `UNSEEN_FIRE_HOTKEY=openPanel`.
+        if let name = ProcessInfo.processInfo.environment["UNSEEN_FIRE_HOTKEY"] {
+            guard let action = Self.hotKeyAction(named: name) else {
+                print("fired=false action=\(name) (unknown, nothing fired)")
+                exit(1)
+            }
+            let fired = GlobalHotKeyCenter.shared.fireForTesting(action)
+            print("fired=\(fired) action=\(name)")
+            exit(fired ? 0 : 1)
         }
 
         scheduleCaptureProbeIfRequested()
@@ -603,6 +623,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshStatusMenu() {
         guard let statusItem, model != nil else { return }
         statusItem.menu = AppMenuBuilder.statusMenu(settings: model.settings, target: self)
+    }
+
+    /// Map the `UNSEEN_FIRE_HOTKEY` probe's name onto a real action. Only the
+    /// actions a check can usefully drive are listed; an unknown name exits 1.
+    static func hotKeyAction(named name: String) -> HotKeyAction? {
+        switch name {
+        case "openPanel": .openPanel
+        case "pinLastImage": .pinLastImage
+        case "openSettings": .openSettings
+        default: nil
+        }
     }
 
     // MARK: - Global hotkeys

@@ -125,6 +125,7 @@ enum OverlaySelfTest {
         runHoverHighlightTests(into: outputDirectory)
         runPreviewPlateTests(into: outputDirectory)
         runAppearanceTopicTests()
+        runAlbumWatcherTests()
         runGlassSurfaceTests(into: outputDirectory)
         runDarkAppearanceAudit(into: outputDirectory)
         runPresetSizeTests()
@@ -9709,8 +9710,8 @@ enum OverlaySelfTest {
             "title=\(NavItem.capture.title)"
         )
         check(
-            "settings: the 系统 section reads 通用 / 快捷键 / 外观 / 用量 / 隐私 / 存储",
-            system == [.general, .hotkeys, .appearance, .usage, .privacy, .storage],
+            "settings: the 系统 section reads 通用 / 快捷键 / 外观 / 用量 / 隐私 / 存储 / 相册",
+            system == [.general, .hotkeys, .appearance, .usage, .privacy, .storage, .albumSettings],
             "items=\(system.map(\.rawValue))"
         )
         // 2026-10: 快捷键 was promoted from a group inside 通用 to a
@@ -9742,7 +9743,7 @@ enum OverlaySelfTest {
         check(
             "settings: the 工具 and 资料库 entries are still reachable",
             groups["工具"] == expectedTools
-                && groups["资料库"] == [.history, .pins],
+                && groups["资料库"] == [.history, .pins, .album],
             "tools=\(groups["工具"]?.map(\.rawValue) ?? []) "
                 + "library=\(groups["资料库"]?.map(\.rawValue) ?? [])"
         )
@@ -9813,8 +9814,8 @@ enum OverlaySelfTest {
 
         print("[settings] --- middle-column page groups ---")
         check(
-            "settings: there are seventeen settings pages",
-            SettingsSection.allCases.count == 17,
+            "settings: there are eighteen settings pages (17 + 相册)",
+            SettingsSection.allCases.count == 18,
             "count=\(SettingsSection.allCases.count)"
         )
         check(
@@ -13519,6 +13520,176 @@ enum OverlaySelfTest {
     /// the accepted shape: the split keys, the unchanged defaults, the panel
     /// plate moving with 板块不透明度 (so 0 % really clears a card), and the
     /// independence of the two dimensions.
+
+    // MARK: - 相册 · 监听文件夹
+
+    /// The folder watcher is the one feature whose behaviour is mostly "time
+    /// passes and a file appears", so its checks are end-to-end on a real temp
+    /// directory instead of assertions about constants: they import a file,
+    /// prove the album index grew, and prove the keep/delete switch does what it
+    /// says.
+    private static func runAlbumWatcherTests() {
+        print("[album] --- 监听文件夹 → 相册 ---")
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("unseen-album-\(UUID().uuidString)", isDirectory: true)
+        let watched = root.appendingPathComponent("watched", isDirectory: true)
+        let storage = root.appendingPathComponent("support", isDirectory: true)
+        let previousHome = ProcessInfo.processInfo.environment["UNSEEN_HOME"]
+        setenv("UNSEEN_HOME", storage.path, 1)
+        defer {
+            if let previousHome { setenv("UNSEEN_HOME", previousHome, 1) }
+            else { unsetenv("UNSEEN_HOME") }
+            try? fm.removeItem(at: root)
+        }
+        do {
+            try fm.createDirectory(at: watched, withIntermediateDirectories: true)
+            try fm.createDirectory(at: storage, withIntermediateDirectories: true)
+        } catch {
+            check("album: create temp folders", false, "\(error)")
+            return
+        }
+
+        // A real PNG, so the import path decodes and re-encodes an actual image.
+        let png: Data
+        let image = NSImage(size: NSSize(width: 120, height: 80))
+        image.lockFocus()
+        NSColor.systemPink.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 120, height: 80)).fill()
+        image.unlockFocus()
+        png = image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?
+            .representation(using: .png, properties: [:]) } ?? Data()
+        check("album: the fixture is a real PNG", !png.isEmpty, "bytes=\(png.count)")
+
+        let fileA = watched.appendingPathComponent("shot-a.png")
+        let fileB = watched.appendingPathComponent("shot-b.png")
+        try? png.write(to: fileA)
+        try? png.write(to: fileB)
+
+        check(
+            "album: image extensions cover what screenshots actually produce",
+            FolderWatcher.imageExtensions.isSuperset(of: ["png", "jpg", "jpeg", "heic", "tiff", "webp"]),
+            "ext=\(FolderWatcher.imageExtensions.sorted())"
+        )
+
+        // A model with the watcher on, pointed at the temp folder.
+        let suiteName = "UnseenAlbumWatcher-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            check("album: create isolated defaults", false)
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults)
+        settings.autoImportEnabled = true
+        settings.watchedFolderPath = watched.path
+        settings.autoImportKeepOriginal = true
+        settings.autoImportOnlyImages = true
+        settings.autoImportOpenPanel = false
+        settings.maxItems = 500
+
+        let model = AppModel(settings: settings)
+        model.stopMonitoring()          // no clipboard polling during the check
+        defer { model.folderWatcher.stop(); model.stopMonitoring() }
+
+        // Turning the feature on must not Hoover up what was already there.
+        model.folderWatcher.restart(watching: watched.path)
+        model.folderWatcher.scanNow()
+        check(
+            "album: files present before watching are not imported",
+            model.album.isEmpty && fm.fileExists(atPath: fileA.path),
+            "album=\(model.album.count) fileStillThere=\(fm.fileExists(atPath: fileA.path))"
+        )
+
+        // A file that appears *after* the watcher starts is imported.
+        let fileNew = watched.appendingPathComponent("shot-new.png")
+        try? png.write(to: fileNew)
+        model.folderWatcher.scanNow()
+        check(
+            "album: a new file is imported into the album",
+            model.album.count == 1 && model.album.first?.sourceName == "shot-new.png",
+            "album=\(model.album.count) name=\(model.album.first?.sourceName ?? "-")"
+        )
+        check(
+            "album: 保留原文件 keeps the source file",
+            fm.fileExists(atPath: fileNew.path),
+            "exists=\(fm.fileExists(atPath: fileNew.path))"
+        )
+        check(
+            "album: the entry points at a real history row",
+            (model.album.first.map { $0.itemID > 0 } ?? false)
+                && model.items.contains { $0.id == model.album.first?.itemID && $0.hasImage },
+            "itemID=\(model.album.first?.itemID ?? -1)"
+        )
+        let albumFile = model.album.first.map { AlbumStore.fileURL(for: $0.id) }
+        check(
+            "album: the PNG is copied into the album folder",
+            albumFile.map { fm.fileExists(atPath: $0.path) } ?? false,
+            "path=\(albumFile?.lastPathComponent ?? "-")"
+        )
+
+        // The same file twice must not create a second entry.
+        model.folderWatcher.scanNow()
+        check(
+            "album: rescanning the same file does not duplicate it",
+            model.album.count == 1,
+            "album=\(model.album.count)"
+        )
+
+        // keepOriginal = false → the source file is removed, but only because the
+        // import succeeded.
+        settings.autoImportKeepOriginal = false
+        model.folderWatcher.restart(watching: watched.path)   // baseline resets
+        let fileMove = watched.appendingPathComponent("shot-move.png")
+        try? png.write(to: fileMove)
+        model.folderWatcher.scanNow()
+        check(
+            "album: 保留原文件=off removes the source after a successful import",
+            !fm.fileExists(atPath: fileMove.path) && model.album.count == 2,
+            "exists=\(fm.fileExists(atPath: fileMove.path)) album=\(model.album.count)"
+        )
+
+        // A non-image in the folder is ignored while 只导入图片 is on.
+        let notImage = watched.appendingPathComponent("notes.txt")
+        try? Data("hello".utf8).write(to: notImage)
+        model.folderWatcher.scanNow()
+        check(
+            "album: non-image files are ignored",
+            model.album.count == 2 && fm.fileExists(atPath: notImage.path),
+            "album=\(model.album.count)"
+        )
+
+        // Deleting an entry removes its file and its index row, and leaves the
+        // history row alone (a pasted image must not disappear behind the
+        // user's back).
+        if let first = model.album.last {
+            let historyCountBefore = model.totalCount
+            model.removeFromAlbum(first)
+            check(
+                "album: removing an entry drops its album file only",
+                model.album.count == 1
+                    && !fm.fileExists(atPath: AlbumStore.fileURL(for: first.id).path)
+                    && model.totalCount == historyCountBefore,
+                "album=\(model.album.count) history=\(model.totalCount)/\(historyCountBefore)"
+            )
+        }
+
+        // The index survives a reload: the grid reads it back, not a cache.
+        let onDisk = AlbumStore.load()
+        check(
+            "album: the on-disk index matches what the model shows",
+            onDisk.count == model.album.count,
+            "disk=\(onDisk.count) model=\(model.album.count)"
+        )
+
+        // Turning the master switch off must actually stop the timer.
+        model.folderWatcher.stop()
+        check(
+            "album: stopping the watcher disarms it",
+            model.folderWatcher.isWatching == false,
+            "watching=\(model.folderWatcher.isWatching)"
+        )
+    }
+
     private static func runAppearanceTopicTests() {
         print("[appearance] --- 主题: 外观 / 风格 / 不透明度 ---")
         let appearanceGroups = SettingsSection.appearance.pageGroups

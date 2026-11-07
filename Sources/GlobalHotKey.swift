@@ -514,6 +514,16 @@ final class GlobalHotKeyCenter {
         handlers[action]?()
     }
 
+    /// Test/support hook: invoke a registered handler as if its Carbon hotkey
+    /// fired. Used by the `UNSEEN_FIRE_HOTKEY` probe so an automated check can
+    /// drive a real code path (e.g. open the panel) without synthesising
+    /// keyboard events, which needs Accessibility permission of its own.
+    func fireForTesting(_ action: HotKeyAction) -> Bool {
+        guard let handler = handlers[action] else { return false }
+        handler()
+        return true
+    }
+
     private func installEventHandlerIfNeeded() {
         guard eventHandlerRef == nil else { return }
         var specification = EventTypeSpec(

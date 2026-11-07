@@ -185,7 +185,12 @@ final class PasteboardMonitor: NSObject {
         return rep.representation(using: .png, properties: [:])
     }
 
-    private static func thumbnail(from png: Data, maxPixel: CGFloat) -> Data? {
+    /// Down-sample a PNG to a list-row thumbnail.
+    ///
+    /// `internal` rather than `private`: 相册's folder import writes its own
+    /// history row and must produce the same thumbnail the clipboard path does,
+    /// so list rows never differ depending on how the image arrived.
+    static func thumbnail(from png: Data, maxPixel: CGFloat) -> Data? {
         guard let image = NSImage(data: png) else { return nil }
         let size = image.size
         guard size.width > 0, size.height > 0 else { return nil }

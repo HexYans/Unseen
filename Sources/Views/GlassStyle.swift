@@ -1038,6 +1038,7 @@ struct SelectionBackground: View {
 enum SectionPalette {
     static let history = Color.blue
     static let pins = Color.orange
+    static let album = Color.pink
     static let capture = Color.purple
     static let settings = Color.secondary
 }

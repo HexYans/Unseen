@@ -10,6 +10,12 @@ final class AppModel {
     let settings: AppSettings
     /// Images pinned onto the screen (钉图).
     let pinboard: Pinboard
+    /// Watches the user's chosen folder and imports new screenshots into 相册.
+    let folderWatcher: FolderWatcher
+
+    /// Album entries, newest first. Mirrors `AlbumStore` on disk; reloaded by
+    /// `reloadAlbum()` after any add/delete.
+    private(set) var album: [AlbumStore.AlbumRecord] = []
 
     private(set) var items: [ClipItem] = []
     private(set) var totalCount: Int = 0
@@ -45,6 +51,10 @@ final class AppModel {
     @ObservationIgnored var onRequestPresetCapture: (() -> Void)?
     /// Re-apply the camera picture-in-picture switch / position / size.
     @ObservationIgnored var onCameraSettingsChanged: (() -> Void)?
+    /// Show the floating clipboard panel (相册's optional "import 后打开面板").
+    @ObservationIgnored var onRequestOpenPanel: (() -> Void)?
+    /// Jump to 设置 → 相册 (used by the album page's "去设置" button).
+    @ObservationIgnored var onRequestOpenAlbumSettings: (() -> Void)?
 
     var selectedItem: ClipItem? {
         filteredItems.indices.contains(selectedIndex) ? filteredItems[selectedIndex] : nil
@@ -95,6 +105,7 @@ final class AppModel {
     init(settings: AppSettings = AppSettings()) {
         self.settings = settings
         self.pinboard = Pinboard()
+        self.folderWatcher = FolderWatcher()
 
         let directory = Self.resolveStorageDirectory()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -121,8 +132,13 @@ final class AppModel {
 
         observeApplications()
         reload()
+        // Drop album records whose file vanished (a half-copied folder) before
+        // anything renders them.
+        _ = AlbumStore.pruneMissingFiles()
+        reloadAlbum()
         startMonitoring()
         pinboard.attach(model: self)
+        folderWatcher.attach(model: self)
     }
 
     func startMonitoring() {
@@ -314,6 +330,86 @@ final class AppModel {
         }
     }
 
+    // MARK: - 相册 (album)
+
+    /// Re-read the album index from disk.
+    func reloadAlbum() {
+        album = AlbumStore.load()
+    }
+
+    /// Album entries that still have a matching history row, so the grid never
+    /// shows a tile it cannot draw.
+    var albumItems: [(record: AlbumStore.AlbumRecord, item: ClipItem)] {
+        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        return album.compactMap { record in
+            guard let item = byID[record.itemID] else { return nil }
+            return (record, item)
+        }
+    }
+
+    /// Add one history row to the album. Used by the 历史记录 context menu and
+    /// by the folder watcher (which writes the row first, then points at it).
+    @discardableResult
+    func addToAlbum(_ item: ClipItem, sourceName: String? = nil, sourceFolder: String? = nil) -> Bool {
+        guard item.hasImage, let data = fullImage(for: item) else { return false }
+        guard AlbumStore.load(for: item.id) == nil else { return false }  // already in
+        guard AlbumStore.save(
+            pngData: data,
+            itemID: item.id,
+            sourceName: sourceName,
+            sourceFolder: sourceFolder
+        ) != nil else { return false }
+        reloadAlbum()
+        DebugLog.log("album: added item \(item.id)")
+        return true
+    }
+
+    func isInAlbum(_ item: ClipItem) -> Bool {
+        AlbumStore.load(for: item.id) != nil
+    }
+
+    /// Persist a PNG that did not come from the clipboard (folder import): it
+    /// becomes a normal history row first, then an album entry pointing at it.
+    func ingestAlbumImage(
+        _ pngData: Data,
+        sourceName: String?,
+        sourceFolder: String?
+    ) -> Bool {
+        guard let database else { return false }
+        let payload = ClipPayload(
+            kind: .image,
+            text: nil,
+            imagePNG: pngData,
+            thumbnailPNG: PasteboardMonitor.thumbnail(from: pngData, maxPixel: 160),
+            fileURLs: [],
+            sourceApp: "文件夹导入",
+            bundleID: Bundle.main.bundleIdentifier
+        )
+        do {
+            let id = try database.upsert(hash: payload.contentHash, payload: payload)
+            try database.trim(maxItems: settings.maxItems)
+            reload()
+            guard AlbumStore.save(
+                pngData: pngData,
+                itemID: id,
+                sourceName: sourceName,
+                sourceFolder: sourceFolder
+            ) != nil else { return false }
+            reloadAlbum()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Remove an album entry (and its album file). The history row stays so a
+    /// pasted image does not vanish from 历史记录 as a side effect.
+    func removeFromAlbum(_ record: AlbumStore.AlbumRecord) {
+        AlbumStore.delete(record)
+        reloadAlbum()
+    }
+
     func togglePin(_ item: ClipItem) {
         guard let database else { return }
         do {
@@ -401,6 +497,17 @@ final class AppModel {
             try? database.trim(maxItems: settings.maxItems)
         }
         reload()
+    }
+
+    /// Called after any 相册 · 监听文件夹 setting changes, so the watcher picks up
+    /// a new folder, a new recursion flag or the master switch immediately
+    /// instead of on the next launch.
+    func albumSettingsDidChange() {
+        guard settings.autoImportEnabled else {
+            folderWatcher.stop()
+            return
+        }
+        folderWatcher.restart(watching: settings.watchedFolderPath)
     }
 
     /// Called after the hotkey preference changes.

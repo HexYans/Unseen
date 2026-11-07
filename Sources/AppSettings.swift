@@ -112,6 +112,13 @@ final class AppSettings {
         static let instantCaptureSound = "instantCaptureSound"
         static let instantCaptureVisualCue = "instantCaptureVisualCue"
         static let instantCaptureAlsoSave = "instantCaptureAlsoSave"
+        // 相册 · 监听文件夹
+        static let autoImportEnabled = "autoImportEnabled"
+        static let watchedFolderPath = "watchedFolderPath"
+        static let autoImportKeepOriginal = "autoImportKeepOriginal"
+        static let autoImportRespectSubfolders = "autoImportRespectSubfolders"
+        static let autoImportOnlyImages = "autoImportOnlyImages"
+        static let autoImportOpenPanel = "autoImportOpenPanel"
         static let recordingFormat = "recordingFormat"
         static let recordingFrameRate = "recordingFrameRate"
         static let recordingBitrate = "recordingBitrate"
@@ -670,6 +677,43 @@ final class AppSettings {
     /// clipboard. Off by default: "instant" means pasteboard only.
     var instantCaptureAlsoSave: Bool {
         didSet { defaults.set(instantCaptureAlsoSave, forKey: Key.instantCaptureAlsoSave) }
+    }
+
+    // MARK: - 相册 · 监听文件夹
+
+    /// Master switch for the folder watcher. Nothing is watched while this is
+    /// off, even if `watchedFolderPath` still names a folder — turning it off
+    /// must actually stop the timer.
+    var autoImportEnabled: Bool {
+        didSet { defaults.set(autoImportEnabled, forKey: Key.autoImportEnabled) }
+    }
+    /// Absolute (or `~`-relative) path of the folder to watch. Empty means the
+    /// watcher has nothing to do.
+    var watchedFolderPath: String {
+        didSet { defaults.set(watchedFolderPath, forKey: Key.watchedFolderPath) }
+    }
+    /// Keep the original file after it has been copied into 相册. Off means
+    /// "move into the album": the file is deleted **after** a successful
+    /// import, so a failed import never loses anything. Default **on**, because
+    /// silently deleting a user's files is the more surprising behaviour.
+    var autoImportKeepOriginal: Bool {
+        didSet { defaults.set(autoImportKeepOriginal, forKey: Key.autoImportKeepOriginal) }
+    }
+    /// Recurse into subfolders.
+    var autoImportRespectSubfolders: Bool {
+        didSet { defaults.set(autoImportRespectSubfolders, forKey: Key.autoImportRespectSubfolders) }
+    }
+    /// Only import files whose extension looks like an image. Off lets every
+    /// file be attempted, which is only useful for odd extensions; non-images
+    /// are still rejected, because the album stores pictures.
+    var autoImportOnlyImages: Bool {
+        didSet { defaults.set(autoImportOnlyImages, forKey: Key.autoImportOnlyImages) }
+    }
+    /// Open the clipboard panel right after an import, so the user can paste it
+    /// immediately. Off by default: a panel appearing unprompted while a
+    /// screenshot is saved is startling.
+    var autoImportOpenPanel: Bool {
+        didSet { defaults.set(autoImportOpenPanel, forKey: Key.autoImportOpenPanel) }
     }
 
     // MARK: - 录屏
@@ -1349,6 +1393,14 @@ final class AppSettings {
             Key.instantCaptureSound: true,
             Key.instantCaptureVisualCue: true,
             Key.instantCaptureAlsoSave: false,
+            // 相册 · 监听文件夹：off by default, and keep原文件 so turning it
+            // on never deletes anything the user did not ask to delete.
+            Key.autoImportEnabled: false,
+            Key.watchedFolderPath: "",
+            Key.autoImportKeepOriginal: true,
+            Key.autoImportRespectSubfolders: false,
+            Key.autoImportOnlyImages: true,
+            Key.autoImportOpenPanel: false,
             Key.recordingFormat: "mp4",
             Key.recordingFrameRate: 30,
             Key.recordingBitrate: 12_000_000,
@@ -1467,6 +1519,14 @@ final class AppSettings {
         instantCaptureSound = defaults.bool(forKey: Key.instantCaptureSound)
         instantCaptureVisualCue = defaults.bool(forKey: Key.instantCaptureVisualCue)
         instantCaptureAlsoSave = defaults.bool(forKey: Key.instantCaptureAlsoSave)
+        autoImportEnabled = defaults.bool(forKey: Key.autoImportEnabled)
+        watchedFolderPath = defaults.string(forKey: Key.watchedFolderPath) ?? ""
+        autoImportKeepOriginal = defaults.object(forKey: Key.autoImportKeepOriginal) == nil
+            ? true : defaults.bool(forKey: Key.autoImportKeepOriginal)
+        autoImportRespectSubfolders = defaults.bool(forKey: Key.autoImportRespectSubfolders)
+        autoImportOnlyImages = defaults.object(forKey: Key.autoImportOnlyImages) == nil
+            ? true : defaults.bool(forKey: Key.autoImportOnlyImages)
+        autoImportOpenPanel = defaults.bool(forKey: Key.autoImportOpenPanel)
         recordingFormat = defaults.string(forKey: Key.recordingFormat) ?? "mp4"
         recordingFrameRate = defaults.integer(forKey: Key.recordingFrameRate)
         recordingBitrate = defaults.integer(forKey: Key.recordingBitrate)
@@ -1709,6 +1769,14 @@ final class AppSettings {
         instantCaptureSound = defaults.bool(forKey: Key.instantCaptureSound)
         instantCaptureVisualCue = defaults.bool(forKey: Key.instantCaptureVisualCue)
         instantCaptureAlsoSave = defaults.bool(forKey: Key.instantCaptureAlsoSave)
+        autoImportEnabled = defaults.bool(forKey: Key.autoImportEnabled)
+        watchedFolderPath = defaults.string(forKey: Key.watchedFolderPath) ?? ""
+        autoImportKeepOriginal = defaults.object(forKey: Key.autoImportKeepOriginal) == nil
+            ? true : defaults.bool(forKey: Key.autoImportKeepOriginal)
+        autoImportRespectSubfolders = defaults.bool(forKey: Key.autoImportRespectSubfolders)
+        autoImportOnlyImages = defaults.object(forKey: Key.autoImportOnlyImages) == nil
+            ? true : defaults.bool(forKey: Key.autoImportOnlyImages)
+        autoImportOpenPanel = defaults.bool(forKey: Key.autoImportOpenPanel)
         recordingFormat = defaults.string(forKey: Key.recordingFormat) ?? "mp4"
         recordingFrameRate = defaults.integer(forKey: Key.recordingFrameRate)
         recordingBitrate = defaults.integer(forKey: Key.recordingBitrate)
