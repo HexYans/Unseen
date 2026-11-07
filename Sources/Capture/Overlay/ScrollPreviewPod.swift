@@ -6,8 +6,8 @@ import CoreGraphics
 /// The pod's **frame** is a pure function of the selection: it is decided once
 /// and never depends on how long the stitch becomes. Inside that frame the
 /// *card* starts short — the first screen of the page, sharp — and grows
-/// upward as rows arrive, until it is exactly as tall as the selection. From
-/// then on it is frozen and only the picture inside moves.
+/// upward as rows arrive, until it is about to reach the top of the screen.
+/// From then on the box is frozen and the picture inside scales down.
 ///
 /// The card is about a third of the selection's width and as tall as the
 /// selection at most, bottom-aligned with it and fully outside it. Growing
@@ -41,15 +41,6 @@ struct ScrollPreviewPlacement: Equatable {
         let availableHeight = max(1, screen.height - inset * 2)
 
         let cardWidth = ScrollPreviewPod.cardWidth(forSelectionWidth: region.width)
-        // The card freezes at the selection's height. Only a selection taller
-        // than the usable screen shortens it; the stitched length never takes
-        // part in this calculation.
-        let cardHeight = min(
-            max(region.height, ScrollPreviewPod.minimumCardHeight),
-            max(ScrollPreviewPod.minimumCardHeight, availableHeight)
-        )
-        let cardSize = CGSize(width: cardWidth, height: cardHeight)
-
         let minX = screen.minX + inset
         let maxX = max(minX, screen.maxX - inset - cardWidth)
 
@@ -77,12 +68,43 @@ struct ScrollPreviewPlacement: Equatable {
             }
         }
 
-        // Bottom-align the card with the selection. The card grows upward from
-        // this edge, so the bottom edge is the one that must stay put.
-        let y = min(
-            max(region.minY, screen.minY + inset),
-            max(screen.minY + inset, screen.maxY - inset - cardHeight)
-        )
+        // Card height: the viewfinder grows **until it is about to reach the top
+        // of the screen**, then keeps that box and scales the picture down inside
+        // it. Bounding the box by the selection's own height (the old recipe)
+        // stopped the growth one selection tall — on a short selection the card
+        // froze almost immediately and read as a fixed little window instead of
+        // a page being filled in.
+        //
+        // The box still starts at the selection's **bottom** edge and grows
+        // upward, because that is what makes the growth read as the region being
+        // filled in. It must not start at the screen's bottom instead: the
+        // capture toolbar hangs just below the selection, and a box reaching
+        // past it would put the viewfinder underneath the toolbar.
+        //
+        // A screen-tall box only makes sense when there is room beside the
+        // selection. When the selection spans the screen there is no side lane,
+        // so fall back to its height and the above/below placement below.
+        let hasSideLane = !clampedX
+        let boxTop = screen.maxY - inset
+        let boxHeight: CGFloat
+        let y: CGFloat
+        if hasSideLane {
+            boxHeight = min(
+                max(ScrollPreviewPod.minimumCardHeight, boxTop - region.minY),
+                availableHeight
+            )
+            y = max(screen.minY + inset, boxTop - boxHeight)
+        } else {
+            boxHeight = min(
+                max(region.height, ScrollPreviewPod.minimumCardHeight),
+                max(ScrollPreviewPod.minimumCardHeight, availableHeight)
+            )
+            y = min(
+                max(region.minY, screen.minY + inset),
+                max(screen.minY + inset, screen.maxY - inset - boxHeight)
+            )
+        }
+        let cardSize = CGSize(width: cardWidth, height: boxHeight)
 
         var placement = ScrollPreviewPlacement(
             frame: CGRect(x: x, y: y, width: cardSize.width, height: cardSize.height),
@@ -97,11 +119,11 @@ struct ScrollPreviewPlacement: Equatable {
         if placement.card.intersects(region.insetBy(dx: -gap + 1, dy: 0)) {
             let above = region.maxY + gap
             let aboveRoom = screen.maxY - inset - above
-            if aboveRoom >= cardHeight {
+            if aboveRoom >= cardSize.height {
                 placement.card.origin.y = above
                 placement.frame.origin.y = above
             } else {
-                let below = region.minY - gap - cardHeight
+                let below = region.minY - gap - cardSize.height
                 if below >= screen.minY + inset {
                     placement.card.origin.y = below
                     placement.frame.origin.y = below

@@ -641,7 +641,10 @@ final class CaptureCoordinator {
             prefill: nil,
             autoConfirmOnSelectionEnd: true,
             autoConfirmAsScroll: true,
-            windowPickEnabled: false
+            // Same selection language as a normal region capture: drag a box,
+            // or click a window (click selects, Return starts). Scrolling a
+            // window's contents is the common case, so window pick has to work.
+            windowPickEnabled: true
         )
     }
 

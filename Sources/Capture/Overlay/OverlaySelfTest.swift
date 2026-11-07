@@ -4769,17 +4769,24 @@ enum OverlaySelfTest {
         // MARK: Preview geometry
         //
         // Position and width are a pure function of the selection, never of the
-        // stitched length. The card freezes at the selection's height; its
-        // frame is the card, with no reserved strip.
+        // stitched length. The box is as tall as the usable screen — the card
+        // grows inside it until it is about to reach the top, then the picture
+        // scales down; the frame is the box, with no reserved strip.
         let refScreen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
         let refRegion = CGRect(x: 612, y: 445, width: 807, height: 445)
+        // The box starts on the selection's bottom edge and ends at the screen's
+        // top inset: that is "grow upward until you are about to hit the top".
+        let refBoxHeight = refScreen.maxY - ScrollPreviewPod.screenInset - refRegion.minY
         let placement = ScrollPreviewPlacement.make(region: refRegion, screen: refScreen)
         check(
-            "scroll: the card freezes at exactly the selection's height",
-            abs(placement.card.height - refRegion.height) < 0.01
-                && abs(placement.cardSize.height - refRegion.height) < 0.01
+            "scroll: the box runs from the selection's bottom edge to the screen's top",
+            abs(placement.card.height - refBoxHeight) < 0.01
+                && abs(placement.cardSize.height - refBoxHeight) < 0.01
+                && abs(placement.card.minY - refRegion.minY) < 0.01
+                && abs(placement.card.maxY
+                    - (refScreen.maxY - ScrollPreviewPod.screenInset)) < 0.01
                 && placement.frame == placement.card,
-            "card=\(format(placement.card)) region=\(format(refRegion))"
+            "card=\(format(placement.card)) box=\(refBoxHeight)"
         )
         check(
             "scroll: the frame is the card, with no reserved strip",
@@ -4795,10 +4802,12 @@ enum OverlaySelfTest {
             "cardWidth=\(placement.card.width) regionWidth=\(refRegion.width)"
         )
         check(
-            "scroll: the viewfinder hangs off the selection's left, bottom-aligned",
+            "scroll: the viewfinder hangs off the selection's left, bottom-aligned with it",
             placement.onLeft
                 && abs(placement.card.maxX - (refRegion.minX - ScrollPreviewPod.gap)) < 0.01
-                && abs(placement.card.minY - refRegion.minY) < 0.01,
+                && abs(placement.card.minY - refRegion.minY) < 0.01
+                && placement.card.maxY
+                    <= refScreen.maxY - ScrollPreviewPod.screenInset + 0.01,
             "frame=\(format(placement.frame)) region=\(format(refRegion))"
         )
         check(
@@ -4810,14 +4819,15 @@ enum OverlaySelfTest {
         check(
             "scroll: placement cannot depend on the stitched length",
             placement == ScrollPreviewPlacement.make(region: refRegion, screen: refScreen)
-                && placement.card.height == refRegion.height,
+                && abs(placement.card.height - refBoxHeight) < 0.01,
             "frame=\(format(placement.frame))"
         )
         let tallRegion = CGRect(x: 300, y: 60, width: 760, height: 900)
         let tall = ScrollPreviewPlacement.make(region: tallRegion, screen: refScreen)
         check(
-            "scroll: a tall selection keeps the equal height",
-            abs(tall.card.height - tallRegion.height) < 0.01
+            "scroll: a tall selection still grows to the screen's top",
+            abs(tall.card.height
+                - (refScreen.maxY - ScrollPreviewPod.screenInset - tallRegion.minY)) < 0.01
                 && tall.frame.maxY <= refScreen.maxY - ScrollPreviewPod.screenInset + 0.01,
             "card=\(format(tall.card)) frame=\(format(tall.frame))"
         )
@@ -4851,7 +4861,8 @@ enum OverlaySelfTest {
             rightSide.onLeft == false
                 && abs(rightSide.card.minX - (leftRegion.maxX + ScrollPreviewPod.gap)) < 0.01
                 && !rightSide.frame.intersects(leftRegion)
-                && abs(rightSide.card.height - leftRegion.height) < 0.01,
+                && abs(rightSide.card.height
+                    - (refScreen.maxY - ScrollPreviewPod.screenInset - leftRegion.minY)) < 0.01,
             "frame=\(format(rightSide.frame))"
         )
         let fullWidth = CGRect(x: 0, y: 300, width: 1728, height: 300)
@@ -4879,7 +4890,7 @@ enum OverlaySelfTest {
         )
         check(
             "scroll: a configured pod starts short, under its final height",
-            abs(growthPod.cardSize.height - refRegion.height) < 0.01
+            abs(growthPod.cardSize.height - refBoxHeight) < 0.01
                 && growthPod.visibleCardHeight < growthPod.cardSize.height - 1
                 && growthPod.isFrozen == false,
             "visible=\(growthPod.visibleCardHeight) final=\(growthPod.cardSize.height)"
@@ -4926,10 +4937,9 @@ enum OverlaySelfTest {
         feed(threeScreens, into: growthPod)
         let midCard = growthPod.cardRect
         check(
-            "scroll: three screens make the card taller, still under the selection",
+            "scroll: three screens make the card taller, still under the box",
             midCard.height > firstCard.height + 1
-                && midCard.height < growthPod.cardSize.height - 1
-                && growthPod.visibleCardHeight < refRegion.height - 1,
+                && midCard.height < growthPod.cardSize.height - 1,
             "first=\(firstCard.height) mid=\(midCard.height) "
                 + "final=\(growthPod.cardSize.height)"
         )
@@ -4942,13 +4952,12 @@ enum OverlaySelfTest {
         let frozenCard = growthPod.cardRect
         let frozenContent = growthPod.contentHeight
         check(
-            "scroll: the card reaches exactly the selection's height, then freezes",
+            "scroll: the card reaches exactly the box's height, then freezes",
             abs(frozenCard.height - growthPod.cardSize.height) < 1
                 && growthPod.isFrozen
-                && growthPod.scale == 1
-                && abs(frozenCard.height - refRegion.height) < 1,
-            "card=\(format(frozenCard)) scale=\(growthPod.scale) "
-                + "selectionHeight=\(refRegion.height)"
+                && growthPod.scale == 1,
+            "card=\(format(frozenCard)) box=\(growthPod.cardSize.height) "
+                + "scale=\(growthPod.scale)"
         )
         check(
             "scroll: at the freeze point the well is the box's well",
@@ -5120,6 +5129,51 @@ enum OverlaySelfTest {
                 + "location=\(String(describing: wheel?.location))"
         )
 
+        // Auto scroll must not steal the pointer. The old recipe posted at the
+        // HID tap with an explicit location, which moves the hardware cursor to
+        // the region's centre on every tick — so the user could never reach the
+        // viewfinder's 停止 button, which is exactly what they reported.
+        check(
+            "scroll: a pointer that moved means the user reached for the controls",
+            ScrollCaptureController.pointerMoved(
+                from: CGPoint(x: 100, y: 100),
+                to: CGPoint(x: 100.5, y: 100.4)
+            ) == false
+                && ScrollCaptureController.pointerMoved(
+                    from: CGPoint(x: 100, y: 100),
+                    to: CGPoint(x: 140, y: 100)
+                ) == true,
+            "small=\(ScrollCaptureController.pointerMoved(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 100.5, y: 100.4))) "
+                + "large=\(ScrollCaptureController.pointerMoved(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 140, y: 100)))"
+        )
+        check(
+            "scroll: the wheel targets the page's pid whenever one was resolved",
+            ScrollCaptureController.deliversToPID(pid: 1234)
+                && !ScrollCaptureController.deliversToPID(pid: nil)
+                && !ScrollCaptureController.deliversToPID(pid: 0),
+            "pid1234=\(ScrollCaptureController.deliversToPID(pid: 1234)) "
+                + "nil=\(ScrollCaptureController.deliversToPID(pid: nil))"
+        )
+        if let scrollScreenForWheel = NSScreen.main ?? NSScreen.screens.first {
+            let live = ScrollCaptureController(
+                region: CGRect(x: 200, y: 217, width: 680, height: 700),
+                screen: scrollScreenForWheel,
+                interval: 0.2,
+                includeCursor: false,
+                maxFrames: 40
+            )
+            live.postOneAutoScrollStepForTesting()
+            // A headless run has no window under that region, so there is no pid
+            // to target; the flag must then honestly report the fallback rather
+            // than claim a delivery that could not be aimed.
+            check(
+                "scroll: auto-scroll delivery matches the resolved target",
+                live.lastDeliveryWasTargeted == (live.targetPID != nil),
+                "targeted=\(live.lastDeliveryWasTargeted) "
+                    + "pid=\(live.targetPID.map(String.init) ?? "nil")"
+            )
+        }
+
         // The HUD placement helper keeps the progress panel out of the region.
         let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
         let region = CGRect(x: 100, y: 100, width: 600, height: 300)
@@ -5197,6 +5251,44 @@ enum OverlaySelfTest {
             scrollPreviewEnabled: true
         )
         canvas.addSubview(overlay)
+
+        // Scrolling reuses the region selector, so a single click on a window has
+        // to arm it exactly like 窗口截图 does — the common case for a long
+        // capture is "scroll this window", and without this the only way in was
+        // to drag a box by hand.
+        let pickedWindow = CGRect(x: 300, y: 700, width: 520, height: 320)
+        overlay.setWindowPickCandidatesForTesting([
+            WindowCandidate(
+                windowNumber: 4242,
+                bounds: pickedWindow,
+                layer: 0,
+                ownerPID: 999,
+                ownerName: "Fixture",
+                windowName: "Scrollable",
+                isOwnedBySelf: false
+            )
+        ])
+        overlay.clickForWindowPickForTesting(at: CGPoint(x: pickedWindow.midX, y: pickedWindow.midY))
+        check(
+            "scroll-ui: one click arms a window, exactly like 窗口截图",
+            overlay.hasArmedWindowForTesting
+                && overlay.windowHighlightRectForTesting == pickedWindow,
+            "armed=\(overlay.hasArmedWindowForTesting) "
+                + "highlight=\(String(describing: overlay.windowHighlightRectForTesting))"
+        )
+        var scrollStarts = 0
+        overlay.onSelectionDrawn = { _, _ in scrollStarts += 1 }
+        overlay.pressReturnForTesting()
+        check(
+            "scroll-ui: Return on an armed window starts the scrolling session",
+            scrollStarts == 1
+                && overlay.isScrollActive
+                && overlay.selectionRectForTesting == pickedWindow
+                && !overlay.hasArmedWindowForTesting,
+            "starts=\(scrollStarts) active=\(overlay.isScrollActive) "
+                + "selection=\(format(overlay.selectionRectForTesting))"
+        )
+
         overlay.applySelectionForTesting(selection)
         overlay.revealToolbarForTesting()
         overlay.beginScrollSessionForTesting()
@@ -5255,11 +5347,15 @@ enum OverlaySelfTest {
                 && abs(emptyFrame.minY - selection.minY) < 0.01,
             "pod=\(format(emptyFrame)) selection=\(format(selection))"
         )
+        // The box runs from the selection's bottom edge up to the screen's top
+        // inset; the card inside it starts at the minimum and grows.
+        let expectedBoxHeight = bounds.maxY - ScrollPreviewPod.screenInset - selection.minY
         check(
-            "scroll-ui: the frame is as tall as the selection, the card starts short",
-            abs(emptyFrame.height - selection.height) < 0.01
-                && overlay.scrollPodForTesting.cardRect.height < selection.height - 1,
-            "frame=\(format(emptyFrame)) card=\(format(emptyCard))"
+            "scroll-ui: the box reaches the screen's top, the card starts short",
+            abs(emptyFrame.height - expectedBoxHeight) < 0.01
+                && emptyFrame.height > selection.height
+                && overlay.scrollPodForTesting.cardRect.height < emptyFrame.height - 1,
+            "frame=\(format(emptyFrame)) box=\(expectedBoxHeight) card=\(format(emptyCard))"
         )
         check(
             "scroll-ui: the toolbar does not cover the viewfinder",
@@ -5350,12 +5446,12 @@ enum OverlaySelfTest {
         let fullCard = pod.cardRect
         let fullContent = pod.contentHeight
         check(
-            "scroll-ui: the card reaches exactly the selection's height",
-            abs(fullCard.height - selection.height) < 1
+            "scroll-ui: the card reaches exactly the box's height",
+            abs(fullCard.height - emptyFrame.height) < 1
                 && pod.isFrozen
                 && pod.scale == 1
                 && overlay.scrollPodFrameForTesting == emptyFrame,
-            "card=\(format(fullCard)) scale=\(pod.scale) selection=\(format(selection))"
+            "card=\(format(fullCard)) box=\(emptyFrame.height) scale=\(pod.scale)"
         )
         check(
             "scroll-ui: the frozen well is the box's well",
@@ -7129,12 +7225,16 @@ enum OverlaySelfTest {
             let pod = overlay.scrollPodForTesting
             let frame = overlay.scrollPodFrameForTesting
             let shortCard = pod.cardRect
+            // The box grows up to the screen's top inset, so it is taller than
+            // the selection whenever the selection is not already at the top.
+            let expectedBox = bounds.maxY - ScrollPreviewPod.screenInset - item.selection.minY
             check(
-                "\(item.name): the frame is the selection's height, the card is shorter",
-                abs(frame.height - item.selection.height) < 0.01
-                    && shortCard.height < item.selection.height - 1
+                "\(item.name): the box reaches the screen's top, the card is shorter",
+                abs(frame.height - expectedBox) < 0.01
+                    && frame.height >= item.selection.height
+                    && shortCard.height < frame.height - 1
                     && abs(shortCard.minY) < 0.01,
-                "frame=\(format(frame)) card=\(format(shortCard)) "
+                "frame=\(format(frame)) box=\(expectedBox) card=\(format(shortCard)) "
                     + "selection=\(format(item.selection))"
             )
             check(
@@ -7169,8 +7269,8 @@ enum OverlaySelfTest {
             overlay.layoutSubtreeIfNeeded()
             let fullCard = pod.cardRect
             check(
-                "\(item.name): one box of content freezes the card at the selection's height",
-                abs(fullCard.height - item.selection.height) < 1
+                "\(item.name): one box of content freezes the card at the box's height",
+                abs(fullCard.height - frame.height) < 1
                     && pod.isFrozen
                     && pod.scale == 1
                     && overlay.scrollPodFrameForTesting == frame,
@@ -7224,7 +7324,7 @@ enum OverlaySelfTest {
                     && abs(panelFrame.minY - frame.minY) < 1.01
                     && abs(panelFrame.width - frame.width) < 1.01
                     && abs(panelFrame.height - frame.height) < 1.01
-                    && abs(panelController.pod.cardSize.height - item.selection.height) < 0.01
+                    && abs(panelController.pod.cardSize.height - frame.height) < 0.01
                     && abs(panelController.pod.cardSize.width - pod.cardSize.width) < 0.01,
                 "panel=\(format(panelFrame)) "
                     + "pod=\(format(panelController.pod.frame)) "

@@ -967,6 +967,23 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
         layoutSelection()
     }
 
+    /// Start the scrolling session from whatever is currently selected — a
+    /// dragged box or an armed window. One path for both, so the two ways in
+    /// cannot diverge.
+    private func beginScrollFromCurrentSelection() {
+        guard scrollMode, let rect = committedRect, rect.width >= 1, rect.height >= 1 else { return }
+        // Commit the armed window as the box *before* starting: the session's
+        // layout and the viewfinder both read `committedRect`, so clearing the
+        // armed state first would leave them looking at nothing.
+        if armedWindowPick != nil {
+            clearArmedWindowPick()
+            selectionBorder.setSelection(rect)
+            layoutSelection()
+        }
+        beginScrollSession()
+        onSelectionDrawn?(rect, annotationsForExport)
+    }
+
     // MARK: - Scroll keyboard grammar
 
     /// Return / Escape for a live scrolling session.
@@ -2626,6 +2643,10 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             }
             requestCancel("escape")
         case 36, 76:  // return / keypad enter
+            if scrollMode, armedWindowPick != nil || (selectionBorder.hasSelection && !isScrollActive) {
+                beginScrollFromCurrentSelection()
+                return
+            }
             if windowConfirmationOnly {
                 if let hoveredPick {
                     onWindowPicked?(CGWindowID(hoveredPick.candidate.windowNumber), hoveredPick.rect)
@@ -3092,6 +3113,18 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
                 + "owner=\(target.candidate.ownerName) title=\(target.candidate.windowName) "
                 + "rect=\(NSStringFromRect(target.rect))"
             )
+            // In scrolling mode a window is just the region: the whole frame,
+            // title bar included, becomes the scrolling box and the session
+            // starts. There is no window-ID capture here because the page will
+            // change while the stitch runs.
+            if scrollMode {
+                let rect = target.rect
+                clearArmedWindowPick()
+                selectionBorder.setSelection(rect)
+                layoutSelection()
+                beginScrollFromCurrentSelection()
+                return
+            }
             // A committed window accepts annotations (its rect drives the
             // canvas), so a second-click confirmation must not drop them. With
             // no drawings, keep the window-ID capture path and its exact window
@@ -3583,6 +3616,39 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
     }
     func setStyleForTesting(_ style: AnnotationStyle, for tool: AnnotationTool) {
         setStyle(style, for: tool)
+    }
+
+    /// Click at `point` exactly as a real mouse-up would, through the window-pick
+    /// router. Used by the self-test to prove that a single click arms a window
+    /// in scrolling mode without synthesising an NSEvent.
+    func clickForWindowPickForTesting(at point: CGPoint) {
+        resolveWindowTap(at: point, armedAtPress: nil)
+    }
+
+    /// Press Return through the same `keyDown` the overlay uses.
+    func pressReturnForTesting() {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window?.windowNumber ?? 0,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: 36
+        ) else { return }
+        keyDown(with: event)
+    }
+
+    /// True while a window is highlighted and waiting for the confirming Return.
+    var hasArmedWindowForTesting: Bool { armedWindowPick != nil }
+
+    /// The window the picker is currently highlighting (armed, or hovered when
+    /// nothing is armed yet), for the click-to-arm check.
+    var windowHighlightRectForTesting: CGRect? {
+        armedWindowPick?.rect ?? hoveredPick?.rect
     }
 
     /// Feed the picker a synthetic window stack in view coordinates. Production

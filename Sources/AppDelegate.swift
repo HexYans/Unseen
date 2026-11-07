@@ -646,6 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "openPanel": .openPanel
         case "pinLastImage": .pinLastImage
         case "openSettings": .openSettings
+        case "scrollCapture": .scroll
         default: nil
         }
     }

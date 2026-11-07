@@ -387,6 +387,9 @@ final class ScrollCaptureController {
     private(set) var stitchedImage: CGImage?
     /// Whether the opt-in auto scroll is currently posting wheel events.
     private(set) var isAutoScrolling = false
+    /// Pointer position at the last auto-scroll tick. A real move means the user
+    /// reached for the controls, so the drive lets go instead of fighting them.
+    private var lastAutoScrollPointer: CGPoint?
     /// True while the stopped session is composing its final image.
     ///
     /// Sampling is already over (`isRunning == false`) but no image exists yet,
@@ -532,6 +535,25 @@ final class ScrollCaptureController {
         CGPoint(x: region.midX, y: primaryScreenMaxY - region.midY)
     }
 
+    /// Whether a wheel can be aimed at the page directly. Aiming at the pid keeps
+    /// the hardware cursor where the user left it; the HID-tap fallback moves it,
+    /// so it is only used when no pid could be resolved.
+    nonisolated static func deliversToPID(pid: pid_t?) -> Bool {
+        guard let pid else { return false }
+        return pid > 0
+    }
+
+    /// Whether the pointer moved far enough that the user is clearly reaching for
+    /// something (the viewfinder's 停止 button) rather than nudging the page.
+    /// Auto scroll releases on this instead of fighting the hand.
+    nonisolated static func pointerMoved(
+        from previous: CGPoint,
+        to current: CGPoint,
+        threshold: CGFloat = 2
+    ) -> Bool {
+        hypot(current.x - previous.x, current.y - previous.y) > threshold
+    }
+
     /// The wheel event shape iShot posts: pixel units, one axis, negative =
     /// content scrolls down.
     nonisolated static func wheelEvent(step: Int32, at point: CGPoint) -> CGEvent? {
@@ -673,11 +695,42 @@ final class ScrollCaptureController {
         )
     }
 
-    /// Post one wheel event at the HID tap. The overlay is made
-    /// mouse-transparent first, so the event is routed to the window under the
-    /// pointer — the page — instead of being swallowed by the capture panel.
+    /// Deliver one wheel event to the page **without touching the pointer**.
+    ///
+    /// `post(tap: .cghidEventTap)` with an explicit `event.location` moves the
+    /// hardware cursor to that point: the user's pointer was yanked to the
+    /// middle of the captured region on every tick, so they could not reach the
+    /// viewfinder's 停止 button — exactly the "auto scroll keeps stealing my
+    /// mouse" report. Posting to the target pid delivers the same wheel to the
+    /// page and leaves the cursor alone; the location is still set so the app
+    /// hit-tests the right point inside its own window.
     private func post(_ event: CGEvent) {
-        event.post(tap: .cghidEventTap)
+        if Self.deliversToPID(pid: targetPID), let pid = targetPID {
+            event.postToPid(pid)
+            lastDeliveryWasTargeted = true
+        } else {
+            event.post(tap: .cghidEventTap)
+            lastDeliveryWasTargeted = false
+        }
+    }
+
+    /// True when the last wheel went straight to the page's pid. Posting at the
+    /// HID tap with an explicit location moves the hardware cursor, which is the
+    /// bug this flag exists to keep fixed; the self-test asserts on it.
+    private(set) var lastDeliveryWasTargeted = false
+
+    /// Post exactly one auto-scroll step, ignoring the running-state gates. The
+    /// self-test uses it to observe delivery without a live page.
+    func postOneAutoScrollStepForTesting() {
+        let point = Self.pointerPoint(
+            region: region,
+            primaryScreenMaxY: primaryScreenMaxY()
+        )
+        guard let event = Self.wheelEvent(
+            step: Self.autoScrollStep(forRegionHeight: region.height),
+            at: point
+        ) else { return }
+        post(event)
     }
 
     /// A wheel that somehow still landed on the overlay.
@@ -703,6 +756,19 @@ final class ScrollCaptureController {
 
     private func postScrollStep() {
         guard canAutoScroll, isRunning else { return }
+
+        // Moving the pointer stops auto scroll. The old behaviour posted at a
+        // fixed location *and* moved the cursor there, so "reach for 停止" was
+        // impossible; this turns any deliberate move into the pause gesture.
+        let mouse = NSEvent.mouseLocation
+        if let last = lastAutoScrollPointer,
+           Self.pointerMoved(from: last, to: mouse) {
+            DebugLog.log("scroll: auto scroll released by pointer movement")
+            stopAutoScroll()
+            return
+        }
+        lastAutoScrollPointer = mouse
+
         let point = Self.pointerPoint(
             region: region,
             primaryScreenMaxY: primaryScreenMaxY()
@@ -890,6 +956,7 @@ final class ScrollCaptureController {
     func startAutoScroll() {
         guard isRunning, canAutoScroll else { return }
         isAutoScrolling = true
+        lastAutoScrollPointer = NSEvent.mouseLocation
         lastGrowthAt = Date()
         // Already transparent since `start()`. Re-asserted so a caller that
         // began a run from a non-standard path still ends up click-through.
