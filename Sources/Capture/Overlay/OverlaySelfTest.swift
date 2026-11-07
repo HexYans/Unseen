@@ -5302,6 +5302,48 @@ enum OverlaySelfTest {
             check("scroll: build the pinned-band fixtures", false)
         }
 
+        // The session measures the pinned bands once and shrinks its region to
+        // the scrolling body, so the stitched image never repeats a tab bar and
+        // the matcher never compares a bar against page content.
+        if let bandPage = makeStripedPage(width: 240, height: 1_400),
+           let plainA = makeViewport(
+               from: bandPage, offset: 0, height: 600, pinnedBand: 0
+           ),
+           let plainB = makeViewport(
+               from: bandPage, offset: 150, height: 600, pinnedBand: 0
+           ),
+           let bandA = makeViewport(
+               from: bandPage, offset: 0, height: 600, pinnedBand: 44, bottomBand: 28
+           ),
+           let bandB = makeViewport(
+               from: bandPage, offset: 150, height: 600, pinnedBand: 44, bottomBand: 28
+           ),
+           let rasterPlainA = ScrollStitcher.SampledRaster(plainA),
+           let rasterPlainB = ScrollStitcher.SampledRaster(plainB),
+           let rasterBandA = ScrollStitcher.SampledRaster(bandA),
+           let rasterBandB = ScrollStitcher.SampledRaster(bandB) {
+            let plainInsets = ScrollCaptureController.detectBandInsets(
+                existing: rasterPlainA,
+                next: rasterPlainB
+            )
+            check(
+                "scroll: a plain page reports no pinned bands",
+                plainInsets.top == 0 && plainInsets.bottom == 0,
+                "top=\(plainInsets.top) bottom=\(plainInsets.bottom)"
+            )
+            let bandInsets = ScrollCaptureController.detectBandInsets(
+                existing: rasterBandA,
+                next: rasterBandB
+            )
+            check(
+                "scroll: a window's tab bar and status bar are measured for trimming",
+                abs(bandInsets.top - 44) <= 2 && abs(bandInsets.bottom - 28) <= 2,
+                "top=\(bandInsets.top) bottom=\(bandInsets.bottom)"
+            )
+        } else {
+            check("scroll: build the band-inset fixtures", false)
+        }
+
         // A window selected for scrolling capture has a title bar and usually a
         // status bar that never move. Those must not stop the session and must
         // not be cropped away: the frames simply stitch.
@@ -5508,6 +5550,44 @@ enum OverlaySelfTest {
             "armed=\(overlay.hasArmedWindowForTesting) "
                 + "highlight=\(String(describing: overlay.windowHighlightRectForTesting))"
         )
+        // Choosing a window settles the selection, so the cross must stop where
+        // the click landed. It used to keep following the pointer, which read as
+        // "the window is not really selected". This needs a crosshair-enabled
+        // overlay: the one above runs with `showCrosshair: false` for stable
+        // renders, and freezing is a no-op there by design.
+        let crosshairOverlay = CaptureOverlayView(
+            frame: bounds,
+            mode: .region,
+            prefilledSelection: nil,
+            showCrosshair: true,
+            rendersOffscreen: true,
+            scrollMode: true,
+            scrollPreviewEnabled: false
+        )
+        canvas.addSubview(crosshairOverlay)
+        crosshairOverlay.setWindowPickCandidatesForTesting([
+            WindowCandidate(
+                windowNumber: 4243,
+                bounds: pickedWindow,
+                layer: 0,
+                ownerPID: 999,
+                ownerName: "Fixture",
+                windowName: "Scrollable",
+                isOwnedBySelf: false
+            )
+        ])
+        crosshairOverlay.clickForWindowPickForTesting(
+            at: CGPoint(x: pickedWindow.midX, y: pickedWindow.midY)
+        )
+        check(
+            "scroll-ui: picking a window freezes the crosshair on it",
+            crosshairOverlay.isCrosshairFrozenForTesting,
+            "frozen=\(crosshairOverlay.isCrosshairFrozenForTesting) "
+                + "armed=\(crosshairOverlay.hasArmedWindowForTesting) "
+                + "rect=\(String(describing: crosshairOverlay.windowHighlightRectForTesting))"
+        )
+        crosshairOverlay.removeFromSuperview()
+
         var scrollStarts = 0
         overlay.onSelectionDrawn = { _, _ in scrollStarts += 1 }
         overlay.pressReturnForTesting()

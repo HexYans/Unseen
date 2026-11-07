@@ -541,10 +541,16 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
     /// is frozen at mouse-up.
     private func layoutSelection() {
         let rect = selectionBorder.selectionRect
-        // No box, no freeze: a crosshair pinned to a selection that no longer
-        // exists would be a stray line across the screen.
+        // No box, no freeze — unless a window is armed: an armed window *is* a
+        // settled selection, it just lives in `armedWindowPick` instead of the
+        // border. Unfreezing there was what put the cross back under the pointer
+        // the moment a window was clicked.
         if !selectionBorder.hasSelection {
-            unfreezeCrosshair()
+            if let armedWindowPick, frozenCorner != nil {
+                applyFrozenCrosshair(for: armedWindowPick.rect)
+            } else {
+                unfreezeCrosshair()
+            }
         } else if frozenCorner != nil {
             // The box moved without a drag (arrow-key nudge, F, the size chip,
             // the ratio lock). A frozen cross is a *coordinate readout*, so it
@@ -949,6 +955,20 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
     ///
     /// Idempotent: drawing a second box while a session is running keeps the
     /// pod up and lets the coordinator restart the stitch for the new region.
+    /// The session shrank its region to the rows that scroll (the window's
+    /// title/tab/status bars are pinned and would otherwise be stitched in
+    /// repeatedly). The border, handles, chip and viewfinder all follow, so what
+    /// the user sees is exactly what is being captured.
+    func applyTrimmedScrollRegion(_ rect: CGRect) {
+        guard isScrollActive, rect.width >= 1, rect.height >= 1 else { return }
+        selectionBorder.setSelection(rect)
+        lastNotifiedScrollRect = rect
+        // Keep the frozen cross on the same corner of the *new* box.
+        applyFrozenCrosshair(for: rect)
+        layoutSelection()
+        DebugLog.log("scroll-ui: selection trimmed to \(NSStringFromRect(rect))")
+    }
+
     func beginScrollSession() {
         guard scrollMode, committedRect != nil else { return }
         if !isScrollActive {
@@ -3209,7 +3229,19 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
                 ))
             }
         }
+        // Selecting a window settles the selection, so the cross stops where the
+        // click landed and stays there — exactly what a dragged box does on
+        // release. Without this the cross kept following the pointer after the
+        // window was chosen, which read as "the selection is not really made".
+        //
+        // Deliberately does *not* push the rect into `selectionBorder`: a real
+        // selection there is what tells the rest of the overlay "the user drew a
+        // box", and an armed window is not that — it clears the armed state and
+        // the click stops working. The armed rect already drives `committedRect`.
         layoutSelection()
+        // After `layoutSelection`, not before: that pass unfreezes a cross with no
+        // border selection, and an armed window has none.
+        freezeCrosshair(for: target.rect, releasedAt: point)
         // The hover pixels were already on screen, so this only promotes them
         // to "selected". Painting now (instead of waiting for the next display
         // pass) keeps that promotion inside the click's own frame.

@@ -405,6 +405,10 @@ final class ScrollCaptureController {
     private(set) var auxiliaryWindowIDs: [CGWindowID] = []
 
     var onFinish: ((CGImage, CGFloat, Int) -> Void)?
+    /// The region shrank to exclude the screen-pinned bands. The overlay follows
+    /// so the border and the viewfinder describe the same box the session is
+    /// actually capturing.
+    var onRegionTrimmed: ((CGRect) -> Void)?
     var onCancel: ((String?) -> Void)?
     /// One report per sample: the viewfinder band (nil before the first
     /// frame), whether the page has grown, and whether Auto Scroll is on.
@@ -533,6 +537,43 @@ final class ScrollCaptureController {
     /// position would receive the wheel.
     nonisolated static func pointerPoint(region: CGRect, primaryScreenMaxY: CGFloat) -> CGPoint {
         CGPoint(x: region.midX, y: primaryScreenMaxY - region.midY)
+    }
+
+    /// How many rows at the top and bottom of the selection are **screen-pinned**
+    /// (a title bar, a tab bar, a sticky table header, a status bar).
+    ///
+    /// A window is the common case for a long capture and almost always has at
+    /// least one: the tab bar of a browser, the sidebar header of a file list.
+    /// Those rows never scroll, so a stitch built from whole frames repeats them
+    /// and the matcher keeps comparing a bar against page content.
+    ///
+    /// Measuring them once lets the session **shrink the capture region to the
+    /// scrolling body** and start over, after which every frame is pure content:
+    /// no repeated bars, no mismatched comparisons, no "this page does not
+    /// scroll".
+    nonisolated static func detectBandInsets(
+        existing: ScrollStitcher.SampledRaster,
+        next: ScrollStitcher.SampledRaster
+    ) -> (top: Int, bottom: Int) {
+        let height = min(existing.height, next.height)
+        guard height >= 24,
+              let mask = ScrollStitcher.staticMask(
+                  existing: existing,
+                  next: next,
+                  height: height
+              ) else { return (0, 0) }
+        var top = 0
+        while top < height, mask.rows[top] { top += 1 }
+        var bottom = 0
+        while bottom < height - top, mask.rows[height - bottom - 1] { bottom += 1 }
+        // A band that covers most of the frame is not a band — it is a page that
+        // did not move, which the stillness detector owns.
+        let limit = height / 2
+        if top > limit || bottom > limit { return (0, 0) }
+        // Sub-pixel noise can pin a row or two at the very edge; trimming those
+        // would shift the region for nothing.
+        let minimumBand = max(3, height / 100)
+        return (top >= minimumBand ? top : 0, bottom >= minimumBand ? bottom : 0)
     }
 
     /// Whether a wheel can be aimed at the page directly. Aiming at the pid keeps
@@ -718,6 +759,11 @@ final class ScrollCaptureController {
     /// HID tap with an explicit location moves the hardware cursor, which is the
     /// bug this flag exists to keep fixed; the self-test asserts on it.
     private(set) var lastDeliveryWasTargeted = false
+
+    /// Previous frame, kept only until the bands have been measured once.
+    private var bandReference: CGImage?
+    /// True once the region has been trimmed (or was found to need no trim).
+    private(set) var didTrimBands = false
 
     /// Post exactly one auto-scroll step, ignoring the running-state gates. The
     /// self-test uses it to observe delivery without a live page.
@@ -938,6 +984,10 @@ final class ScrollCaptureController {
     func updateRegion(_ rect: CGRect) {
         guard rect != region, rect.width >= 1, rect.height >= 1 else { return }
         region = rect
+        // A new box has its own pinned bands: measure them again from the first
+        // two frames instead of trusting the old measurement.
+        didTrimBands = false
+        bandReference = nil
         resolveTarget()
         worker.reset()
         sampledFrameCount = 0
@@ -1089,6 +1139,56 @@ final class ScrollCaptureController {
         }
     }
 
+    /// Shrink `region` to the rows that actually scroll, then start the stitch
+    /// over. Called once per session, as soon as two frames exist to compare.
+    private func trimBandsIfNeeded(reference: CGImage, current: CGImage) {
+        guard !didTrimBands else { return }
+        didTrimBands = true
+        bandReference = nil
+        guard let a = ScrollStitcher.SampledRaster(reference),
+              let b = ScrollStitcher.SampledRaster(current) else { return }
+        let insets = Self.detectBandInsets(existing: a, next: b)
+        guard insets.top > 0 || insets.bottom > 0 else { return }
+
+        // Pixels → points, through the width ratio (the capture is at the
+        // screen's backing scale, so both axes share it).
+        let scale = region.width / CGFloat(max(1, current.width))
+        let topPoints = CGFloat(insets.top) * scale
+        let bottomPoints = CGFloat(insets.bottom) * scale
+        let trimmed = CGRect(
+            x: region.minX,
+            y: region.minY + bottomPoints,
+            width: region.width,
+            height: region.height - topPoints - bottomPoints
+        )
+        guard trimmed.height >= 40, trimmed.height >= region.height * 0.3 else {
+            DebugLog.log(
+                "scroll: bands top=\(insets.top) bottom=\(insets.bottom) px rejected "
+                    + "(would leave \(trimmed.height) pt)"
+            )
+            return
+        }
+        region = trimmed
+        // A new region means the accumulated rows were captured from a different
+        // box: start over, exactly like a user-drawn resize.
+        worker.reset()
+        sampledFrameCount = 0
+        stitchedHeight = 0
+        pageGrew = false
+        appendedFrameCount = 0
+        stationaryStreak = 0
+        lastFrame = nil
+        consecutiveFailures = 0
+        lastGrowthAt = Date()
+        resolveTarget()
+        onRegionTrimmed?(trimmed)
+        onUpdate?(nil, false, isAutoScrolling)
+        DebugLog.log(
+            "scroll: trimmed pinned bands top=\(insets.top)px bottom=\(insets.bottom)px "
+                + "→ region=\(NSStringFromRect(trimmed))"
+        )
+    }
+
     private func captureFrame() async {
         guard isRunning else { return }
         do {
@@ -1115,6 +1215,18 @@ final class ScrollCaptureController {
                 mainEnd.timeIntervalSince(capturedAt) * 1000,
                 step.height
             ))
+            // Measure the screen-pinned bands once, from the first two frames,
+            // and shrink the region to the scrolling body. Doing it before the
+            // stitch accumulates anything keeps the output free of repeated
+            // title/tab/status bars.
+            if !didTrimBands {
+                if let reference = bandReference {
+                    trimBandsIfNeeded(reference: reference, current: shot.image)
+                } else {
+                    bandReference = shot.image
+                }
+            }
+            guard isRunning else { return }
             record(step)
             onFrame?(shot.image, step.outcome, step.lastOverlap)
             onUpdate?(step.frame, step.grew, isAutoScrolling)

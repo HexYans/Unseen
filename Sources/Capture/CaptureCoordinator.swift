@@ -685,6 +685,14 @@ final class CaptureCoordinator {
                 targetPID: self?.scrollController?.targetPID
             )
         }
+        // The session may shrink its region to the rows that scroll (a window's
+        // pinned title/tab/status bars are not part of the page). Keep the
+        // coordinator's copy and the overlay's border in step with it.
+        controller.onRegionTrimmed = { [weak self, weak view] rect in
+            guard let self else { return }
+            self.scrollRegion = rect
+            view?.applyTrimmedScrollRegion(rect)
+        }
         // The viewfinder tells the session how big a band it needs, so the
         // pixel work composes exactly the pixels the pod draws instead of the
         // whole stitched image.
