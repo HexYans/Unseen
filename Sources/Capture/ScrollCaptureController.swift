@@ -150,13 +150,14 @@ struct ScrollAutoStitcher {
             skipTopRows: pinnedTop
         )
         let iShotOverlap = best?.overlap
-        DebugLog.log(
-            "scroll: match moving="
+        ScrollDiag.log(
+            "match moving="
                 + "\(movingColumns?.filter { $0 }.count ?? -1)/\(sampled.columnCount) "
                 + "pinnedTop=\(pinnedTop) band=\(best?.band ?? "-") "
                 + "overlap=\(iShotOverlap.map(String.init) ?? "nil") "
                 + "stitchH=\(store.height) frameH=\(frame.height)"
         )
+        DebugLog.log("scroll: match logged")
         let match = ScrollStitcher.findMatch(
             existing: store.sampled,
             next: sampled,
@@ -180,6 +181,11 @@ struct ScrollAutoStitcher {
             : nil
         if needsMotionCheck, let displacement {
             let expectedTop = previousTop + displacement
+            ScrollDiag.log(
+                "motion displacement=\(displacement) previousTop=\(previousTop) "
+                    + "expectedTop=\(expectedTop) stitchH=\(store.height) rows=\(rows) "
+                    + "frameH=\(frame.height) pinnedTop=\(pinnedTop)"
+            )
             if displacement < 0 {
                 // The page went up: these rows are above the current bottom.
                 frameTop = expectedTop
@@ -241,6 +247,10 @@ struct ScrollAutoStitcher {
                 return .stationary
             }
         } else if needsMotionCheck, forward, newRows > frame.height / 2 {
+            DebugLog.log(
+                "scroll: no measurable motion (displacement=nil) rows=\(rows) "
+                    + "frameH=\(frame.height)"
+            )
             // A big append with no measurable move between the two frames is a
             // contradiction: content that really overlapped the stitch was on
             // screen one sample earlier, so the move would have been visible.
@@ -738,13 +748,20 @@ final class ScrollCaptureController {
     /// page and leaves the cursor alone; the location is still set so the app
     /// hit-tests the right point inside its own window.
     private func post(_ event: CGEvent) {
-        if Self.deliversToPID(pid: targetPID), let pid = targetPID {
-            event.postToPid(pid)
-            lastDeliveryWasTargeted = true
-        } else {
-            event.post(tap: .cghidEventTap)
-            lastDeliveryWasTargeted = false
-        }
+        // Measured on a real Chrome window: `postToPid` delivers the event but
+        // most apps do not scroll from it — the page never moved (0 changed
+        // pixels). `post(tap: .cghidEventTap)` scrolls it (345 983 changed
+        // pixels). So the HID tap is the only transport that works, and the
+        // cursor has to be put back afterwards: posting with an explicit
+        // location moves the hardware cursor there, which is what made auto
+        // scroll feel like it had taken the mouse hostage.
+        let saved = NSEvent.mouseLocation
+        event.post(tap: .cghidEventTap)
+        CGWarpMouseCursorPosition(CGPoint(
+            x: saved.x,
+            y: primaryScreenMaxY() - saved.y
+        ))
+        lastDeliveryWasTargeted = false
     }
 
     /// True when the last wheel went straight to the page's pid. Posting at the
@@ -829,6 +846,7 @@ final class ScrollCaptureController {
 
     func start() {
         guard !isRunning else { return }
+        ScrollDiag.begin()
         isRunning = true
         worker.reset()
         worker.setBandSize(previewBandSize)

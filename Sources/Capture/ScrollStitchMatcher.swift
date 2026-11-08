@@ -121,8 +121,12 @@ enum ScrollStitchMatcher {
                 y += rowStride
             }
         }
-        // Nothing moved, or everything did: no useful split.
-        guard movingCount > 0, movingCount < columns else { return nil }
+        // Too few moving columns is worse than none: a one-column band has no
+        // detail, so any offset "matches" it and the search happily returns a
+        // bogus overlap (measured: a still page produced overlap=590). Require a
+        // real share of the width before trusting the split.
+        let minimumMoving = max(4, columns / 12)
+        guard movingCount >= minimumMoving, movingCount < columns else { return nil }
         return moving
     }
 
