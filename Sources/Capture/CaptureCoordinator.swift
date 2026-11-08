@@ -641,10 +641,12 @@ final class CaptureCoordinator {
             prefill: nil,
             autoConfirmOnSelectionEnd: true,
             autoConfirmAsScroll: true,
-            // Same selection language as a normal region capture: drag a box,
-            // or click a window (click selects, Return starts). Scrolling a
-            // window's contents is the common case, so window pick has to work.
-            windowPickEnabled: true
+            // Scrolling capture is a **drawn box only**. Selecting a whole window
+            // and scrolling it sounds convenient, but a window brings its own
+            // pinned chrome — title bar, sidebar, status bar — and every one of
+            // those makes the stitch ambiguous. The region path is the one that
+            // works, so the window path is gone rather than half-working.
+            windowPickEnabled: false
         )
     }
 

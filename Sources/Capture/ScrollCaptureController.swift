@@ -135,30 +135,15 @@ struct ScrollAutoStitcher {
         // works on ordinary pages. The local search stays as the fallback for
         // the frames iShot's rule rejects outright (a mostly-empty page, a hard
         // theme switch mid-scroll).
-        // Read the scroll offset from the columns that actually move, then
-        // append the **whole** row: a window's fixed sidebar is carried along
-        // with that offset, so the long image keeps a continuous sidebar instead
-        // of being cropped to the content area. Comparing whole rows is what
-        // made a sidebar window refuse to stitch at all.
-
-        // The offset comes from the columns that move, and nothing else. Feeding
-        // a measured "pinned rows" count in as a skip turned out to be poison:
-        // the count swings between 130 and 600 from frame to frame as ordinary
-        // content happens to line up, and every correct overlap that needed those
-        // rows was thrown away. The user's rule is the right one — read the scroll
-        // offset from the part that scrolls, then append the whole row.
+        // The offset is measured inside iShot's static left/right margins, then
+        // the **whole** row is appended: anything pinned on the sides (a sidebar,
+        // a scrollbar) travels with the offset instead of being cropped away.
         let best = ScrollStitchMatcher.overlapBest(
             existing: store.sampled,
             next: sampled,
             previous: previous
         )
         let iShotOverlap = best?.overlap
-        ScrollDiag.log(
-            "match band=\(best?.band ?? "-") "
-                + "overlap=\(iShotOverlap.map(String.init) ?? "nil") "
-                + "stitchH=\(store.height) frameH=\(frame.height)"
-        )
-        DebugLog.log("scroll: match logged")
         let match = ScrollStitcher.findMatch(
             existing: store.sampled,
             next: sampled,
@@ -187,11 +172,6 @@ struct ScrollAutoStitcher {
             : nil
         if needsMotionCheck, let displacement {
             let expectedTop = previousTop + displacement
-            ScrollDiag.log(
-                "motion displacement=\(displacement) previousTop=\(previousTop) "
-                    + "expectedTop=\(expectedTop) stitchH=\(store.height) rows=\(rows) "
-                    + "frameH=\(frame.height) pinnedTop=\(pinnedTop)"
-            )
             if displacement < 0 {
                 // The page went up: these rows are above the current bottom.
                 frameTop = expectedTop
@@ -253,10 +233,6 @@ struct ScrollAutoStitcher {
                 return .stationary
             }
         } else if needsMotionCheck, forward, newRows > frame.height / 2 {
-            DebugLog.log(
-                "scroll: no measurable motion (displacement=nil) rows=\(rows) "
-                    + "frameH=\(frame.height)"
-            )
             // A big append with no measurable move between the two frames is a
             // contradiction: content that really overlapped the stitch was on
             // screen one sample earlier, so the move would have been visible.
@@ -852,7 +828,6 @@ final class ScrollCaptureController {
 
     func start() {
         guard !isRunning else { return }
-        ScrollDiag.begin()
         isRunning = true
         worker.reset()
         worker.setBandSize(previewBandSize)

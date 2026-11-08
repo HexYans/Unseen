@@ -66,6 +66,7 @@ final class CaptureOverlayController {
     /// It exists only while the overlay is click-through; see
     /// `installScrollEscapeHotKey`.
     private var scrollEscapeHotKeyInstalled = false
+    private var scrollReturnHotKeyInstalled = false
     /// A scrolling session asked for click-through so the page keeps the wheel.
     /// The request is not applied to the whole panel (that would kill the
     /// toolbar's clicks); `applyScrollPassthroughPolicy` turns it into a
@@ -663,12 +664,40 @@ final class CaptureOverlayController {
         if !scrollEscapeHotKeyInstalled {
             DebugLog.log("scroll: Esc hotkey unavailable; ⌥Z still ends the session")
         }
+        installScrollReturnHotKey()
+    }
+
+    /// Return while the session owns the page's keyboard. On a finished result
+    /// it confirms the long image (same as the viewfinder's 完成); while still
+    /// sampling it stops, which is the existing grammar in `handleScrollKey`.
+    private func installScrollReturnHotKey() {
+        guard !scrollReturnHotKeyInstalled else { return }
+        scrollReturnHotKeyInstalled = GlobalHotKeyCenter.shared.setScrollReturn { [weak self] in
+            guard let self, !self.didFinish else { return }
+            DebugLog.log("scroll: return hotkey fired")
+            for entry in self.entries {
+                _ = entry.view.handleScrollKey(36)
+            }
+        }
+        if !scrollReturnHotKeyInstalled {
+            DebugLog.log("scroll: Return hotkey unavailable; 完成 button still works")
+        }
     }
 
     private func removeScrollEscapeHotKey() {
         guard scrollEscapeHotKeyInstalled else { return }
         scrollEscapeHotKeyInstalled = false
         GlobalHotKeyCenter.shared.clearScrollEscape()
+    }
+
+    /// Return outlives the click-through window on purpose: a finished result is
+    /// exactly when the user presses it, and by then the page may still own the
+    /// keyboard (the overlay only takes the mouse back). It is torn down with the
+    /// panels, in `close()`.
+    private func removeScrollReturnHotKey() {
+        guard scrollReturnHotKeyInstalled else { return }
+        scrollReturnHotKeyInstalled = false
+        GlobalHotKeyCenter.shared.clearScrollReturn()
     }
 
     /// Test seam: false once the session has released Esc.
@@ -690,6 +719,7 @@ final class CaptureOverlayController {
         isPreparing = false
         // A direct close (cancel, a failed start) must never leave the
         // recording HUD or the pointer poller behind.
+        removeScrollReturnHotKey()
         recordingIndicator?.hide()
         recordingIndicator = nil
         recordingEntry?.view.endRecordingUI()
@@ -911,6 +941,7 @@ final class CaptureOverlayController {
             close()
             return
         }
+        removeScrollReturnHotKey()
         recordingIndicator?.hide()
         recordingIndicator = nil
         recordingEntry?.view.endRecordingUI()

@@ -992,23 +992,6 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
         layoutSelection()
     }
 
-    /// Start the scrolling session from whatever is currently selected — a
-    /// dragged box or an armed window. One path for both, so the two ways in
-    /// cannot diverge.
-    private func beginScrollFromCurrentSelection() {
-        guard scrollMode, let rect = committedRect, rect.width >= 1, rect.height >= 1 else { return }
-        // Commit the armed window as the box *before* starting: the session's
-        // layout and the viewfinder both read `committedRect`, so clearing the
-        // armed state first would leave them looking at nothing.
-        if armedWindowPick != nil {
-            clearArmedWindowPick()
-            selectionBorder.setSelection(rect)
-            layoutSelection()
-        }
-        beginScrollSession()
-        onSelectionDrawn?(rect, annotationsForExport)
-    }
-
     // MARK: - Scroll keyboard grammar
 
     /// Return / Escape for a live scrolling session.
@@ -3146,14 +3129,6 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             // title bar included, becomes the scrolling box and the session
             // starts. There is no window-ID capture here because the page will
             // change while the stitch runs.
-            if scrollMode {
-                let rect = target.rect
-                clearArmedWindowPick()
-                selectionBorder.setSelection(rect)
-                layoutSelection()
-                beginScrollFromCurrentSelection()
-                return
-            }
             // A committed window accepts annotations (its rect drives the
             // canvas), so a second-click confirmation must not drop them. With
             // no drawings, keep the window-ID capture path and its exact window
@@ -3176,7 +3151,6 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
         if let preview = hoveredPick,
            preview.rect.insetBy(dx: -1, dy: -1).contains(point) {
             armWindow(preview, at: point)
-            startScrollIfOneClickGesture()
             return
         }
 
@@ -3192,21 +3166,6 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             return
         }
         armWindow(target, at: point)
-        startScrollIfOneClickGesture()
-    }
-
-    /// Scrolling has no "confirm" step: one click on a window is the whole
-    /// gesture, exactly like releasing a drawn box. Asking for a second click or
-    /// a Return was one step too many — and, because the hovered-window branch
-    /// above returns early, doing this only on the "picked fresh" path meant it
-    /// never ran at all for the window the user was pointing at.
-    private func startScrollIfOneClickGesture() {
-        guard scrollMode, let armed = armedWindowPick else { return }
-        let rect = armed.rect
-        clearArmedWindowPick()
-        selectionBorder.setSelection(rect)
-        layoutSelection()
-        beginScrollFromCurrentSelection()
     }
 
     /// Refresh the window stack, pick at `point`, and write the debug ledger.

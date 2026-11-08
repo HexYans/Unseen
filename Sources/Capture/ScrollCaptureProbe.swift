@@ -295,14 +295,6 @@ enum ScrollCaptureProbe {
                 stalls.start()
             }
             controller.start()
-            // Optionally drive the page ourselves: the session posts the same
-            // wheel events the 自动滚动 button does, through the same transport.
-            if ProcessInfo.processInfo.environment["UNSEEN_SCROLL_PROBE_AUTO"] == "1" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    controller.startAutoScroll()
-                    print("scroll-probe: auto scroll engaged")
-                }
-            }
 
             // Screen grabs of the live UI at three points of the run: the
             // empty/settling state, mid-stitch (visible spill), and late.

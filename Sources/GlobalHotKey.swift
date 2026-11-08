@@ -120,6 +120,10 @@ enum HotKeyAction: UInt32, CaseIterable {
     /// Not a user binding. Bare Escape, registered only while a scrolling
     /// capture has handed the keyboard to the page (see `setScrollEscape`).
     case scrollEscape = 19
+    /// Not a user binding. Return, registered only while a scrolling capture
+    /// has handed the keyboard to the page, so the finished long image can be
+    /// confirmed without reaching for the viewfinder's 完成 button.
+    case scrollReturn = 20
 }
 
 /// Every row that owns a configurable shortcut, in the order the
@@ -471,6 +475,44 @@ final class GlobalHotKeyCenter {
     ///
     /// Returns `false` when the key cannot be registered; ⌥Z still stops the
     /// session, so the capture is never trapped.
+    /// Return during a click-through scroll session. Same transport and the same
+    /// reasoning as `setScrollEscape`: while the page owns the keyboard the
+    /// overlay never sees `keyDown`, so Return has to arrive as a Carbon hot key.
+    @discardableResult
+    func setScrollReturn(handler: @escaping () -> Void) -> Bool {
+        unregister(.scrollReturn)
+        installEventHandlerIfNeeded()
+
+        var reference: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            UInt32(kVK_Return),
+            0,
+            EventHotKeyID(
+                signature: HotKeyIdentity.signature,
+                id: HotKeyAction.scrollReturn.rawValue
+            ),
+            GetApplicationEventTarget(),
+            0,
+            &reference
+        )
+
+        guard status == noErr, let reference else {
+            lastErrors[.scrollReturn] = "无法注册 Return（错误码 \(status)），请点预览上的完成。"
+            handlers[.scrollReturn] = nil
+            DebugLog.log("scroll: return hotkey registration failed (\(status))")
+            return false
+        }
+
+        references[.scrollReturn] = reference
+        handlers[.scrollReturn] = handler
+        DebugLog.log("scroll: return hotkey installed")
+        return true
+    }
+
+    func clearScrollReturn() {
+        unregister(.scrollReturn)
+    }
+
     @discardableResult
     func setScrollEscape(handler: @escaping () -> Void) -> Bool {
         unregister(.scrollEscape)

@@ -219,13 +219,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Support hook: feed synthetic window frames through the real scrolling
-        // stitcher and print what it decided, then exit. `UNSEEN_STITCH_PROBE=1`.
-        if ProcessInfo.processInfo.environment["UNSEEN_STITCH_PROBE"] != nil {
-            ScrollProbe.run()
-            exit(0)
-        }
-
         // Support hook: fire one global-hotkey handler by name, then exit. Lets
         // an automated check exercise a real hotkey path (open the panel, start
         // a capture…) without synthesising key events, which needs its own
