@@ -3176,6 +3176,7 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
         if let preview = hoveredPick,
            preview.rect.insetBy(dx: -1, dy: -1).contains(point) {
             armWindow(preview, at: point)
+            startScrollIfOneClickGesture()
             return
         }
 
@@ -3191,14 +3192,21 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             return
         }
         armWindow(target, at: point)
-        // Scrolling has no "confirm" step: one click on a window is the whole
-        // gesture, exactly like releasing a drawn box. Asking for a second click
-        // or a Return was one step too many, and it is the step that broke.
-        if scrollMode {
-            selectionBorder.setSelection(target.rect)
-            layoutSelection()
-            beginScrollFromCurrentSelection()
-        }
+        startScrollIfOneClickGesture()
+    }
+
+    /// Scrolling has no "confirm" step: one click on a window is the whole
+    /// gesture, exactly like releasing a drawn box. Asking for a second click or
+    /// a Return was one step too many — and, because the hovered-window branch
+    /// above returns early, doing this only on the "picked fresh" path meant it
+    /// never ran at all for the window the user was pointing at.
+    private func startScrollIfOneClickGesture() {
+        guard scrollMode, let armed = armedWindowPick else { return }
+        let rect = armed.rect
+        clearArmedWindowPick()
+        selectionBorder.setSelection(rect)
+        layoutSelection()
+        beginScrollFromCurrentSelection()
     }
 
     /// Refresh the window stack, pick at `point`, and write the debug ledger.

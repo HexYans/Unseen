@@ -52,7 +52,7 @@ enum ScrollStitchMatcher {
     static func rowSignature(
         _ raster: ScrollStitcher.SampledRaster,
         y: Int,
-        columns: [Bool]? = nil
+        margins: (left: Int, right: Int) = (0, 0)
     ) -> [Int] {
         let columnCount = raster.columnCount
         guard columnCount > 0 else { return [] }
@@ -60,7 +60,8 @@ enum ScrollStitchMatcher {
         var counts = [Int](repeating: 0, count: signatureBuckets)
         for column in 0..<columnCount {
             guard isInsideMargin(column: column, of: raster) else { continue }
-            if let columns, column < columns.count, !columns[column] { continue }
+            guard column >= margins.left,
+                  column < columnCount - margins.right else { continue }
             let bucket = min(signatureBuckets - 1, column * signatureBuckets / columnCount)
             sums[bucket] += luminance(raster.rgb(column: column, y: y))
             counts[bucket] += 1
@@ -81,65 +82,71 @@ enum ScrollStitchMatcher {
         return true
     }
 
-    /// Which sampled columns actually **scroll**.
-    ///
-    /// A window is not one surface: a browser has a tab bar above and often a
-    /// sidebar on the left, and a file list has a column of labels that never
-    /// moves. Comparing whole rows then never lines up — the sidebar pins the
-    /// left third, the content disagrees, and the frame is declared unmatched,
-    /// which is why a window with a fixed sidebar did not stitch at all.
-    ///
-    /// The fix is the one the user described: read the **scroll offset** from the
-    /// part that moves, then append the whole row. The sidebar is carried along
-    /// with that offset, so the long image keeps a continuous sidebar instead of
-    /// being cropped to the content area.
-    ///
-    /// A column counts as moving when any sampled row differs between the two
-    /// frames at the same y. Returns nil when *nothing* moves (a still page) or
-    /// when everything does (an ordinary full-width page): both cases are what
-    /// the whole-row test already handles correctly.
-    static func movingColumns(
-        _ a: ScrollStitcher.SampledRaster,
-        _ b: ScrollStitcher.SampledRaster
-    ) -> [Bool]? {
-        let height = min(a.height, b.height)
-        let columns = min(a.columnCount, b.columnCount)
-        guard height >= 2, columns > 0 else { return nil }
-        var moving = [Bool](repeating: false, count: columns)
-        var movingCount = 0
-        let rowStride = max(1, height / 64)
-        for column in 0..<columns {
-            var y = 0
-            while y < height {
-                let left = luminance(a.rgb(column: column, y: y))
-                let right = luminance(b.rgb(column: column, y: y))
-                if abs(left - right) > luminanceTolerance {
-                    moving[column] = true
-                    movingCount += 1
-                    break
-                }
-                y += rowStride
-            }
-        }
-        // Too few moving columns is worse than none: a one-column band has no
-        // detail, so any offset "matches" it and the search happily returns a
-        // bogus overlap (measured: a still page produced overlap=590). Require a
-        // real share of the width before trusting the split.
-        let minimumMoving = max(4, columns / 12)
-        guard movingCount >= minimumMoving, movingCount < columns else { return nil }
-        return moving
-    }
-
+    /// Pixels skipped at each end of a row, so a rounded window corner or a
+    /// scrollbar cannot decide a match. iShot's buffer margin is 80 bytes ≈ 20 px.
     private static func isInsideMargin(
         column: Int,
         of raster: ScrollStitcher.SampledRaster
     ) -> Bool {
-        // The sampled columns are spread across the full width; the margin is a
-        // share of the width, so it maps to a share of the column indices.
         let share = Double(edgeMargin) / Double(max(1, raster.width))
         let first = Int((Double(raster.columnCount) * share).rounded(.up))
-        let last = raster.columnCount - first
-        return column >= first && column < last
+        return column >= first && column < raster.columnCount - first
+    }
+
+    /// iShot's left/right **static margins**, in sampled-column indices.
+    ///
+    /// Read out of `-[MXClipView screenShotsAtScrollScreenshots]`: for every
+    /// column it keeps the whole column's luminance vector, compares column `i`
+    /// of the previous frame with column `i` of the current one using
+    /// `sameArrColumn:to:` (tolerance 3), and walks inward from both edges while
+    /// they still match:
+    ///
+    ///     staticLeft  = leading columns that never changed
+    ///     staticRight = trailing columns that never changed
+    ///
+    /// Those two numbers are then used as a **byte margin** by `sameArr:to:`,
+    /// which compares two rows only inside `[staticLeft, width - staticRight)`.
+    /// That is the whole trick behind scrolling a window with a fixed sidebar:
+    /// the sidebar is the left margin, so row comparison never looks at it, while
+    /// the appended picture still keeps the full width.
+    static func staticMargins(
+        _ a: ScrollStitcher.SampledRaster,
+        _ b: ScrollStitcher.SampledRaster
+    ) -> (left: Int, right: Int) {
+        let height = min(a.height, b.height)
+        let columns = min(a.columnCount, b.columnCount)
+        guard height >= 2, columns >= 2 else { return (0, 0) }
+
+        func columnMatches(_ column: Int) -> Bool {
+            // iShot compares the whole column vector and requires every entry to
+            // agree. A live window is not that clean — antialiasing, a caret, a
+            // hover highlight — so a few disagreeing rows are tolerated; the
+            // margin only has to be *mostly* static to be useful.
+            let stride = max(1, height / 96)
+            var sampled = 0
+            var mismatched = 0
+            var y = 0
+            while y < height {
+                sampled += 1
+                let delta = abs(
+                    luminance(a.rgb(column: column, y: y))
+                        - luminance(b.rgb(column: column, y: y))
+                )
+                if delta > Double(signatureTolerance) { mismatched += 1 }
+                y += stride
+            }
+            guard sampled > 0 else { return false }
+            return Double(mismatched) <= Double(sampled) * 0.05
+        }
+
+        var left = 0
+        while left < columns, columnMatches(left) { left += 1 }
+        var right = 0
+        while right < columns - left, columnMatches(columns - right - 1) { right += 1 }
+        // A margin that swallows the whole row leaves nothing to compare; iShot
+        // guards the same case by refusing to compare when the band is empty.
+        guard left + right < columns else { return (0, 0) }
+        return (left, right)
     }
 
     /// True when the two rows are "the same row" by iShot's rule.
@@ -148,7 +155,7 @@ enum ScrollStitchMatcher {
         _ aY: Int,
         _ b: ScrollStitcher.SampledRaster,
         _ bY: Int,
-        columns only: [Bool]? = nil
+        margins: (left: Int, right: Int) = (0, 0)
     ) -> Bool {
         guard aY >= 0, aY < a.height, bY >= 0, bY < b.height else { return false }
         let columns = min(a.columnCount, b.columnCount)
@@ -156,7 +163,7 @@ enum ScrollStitchMatcher {
         var compared = 0
         for column in 0..<columns {
             guard isInsideMargin(column: column, of: a) else { continue }
-            if let only, column < only.count, !only[column] { continue }
+            guard column >= margins.left, column < columns - margins.right else { continue }
             compared += 1
             let left = luminance(a.rgb(column: column, y: aY))
             let right = luminance(b.rgb(column: column, y: bY))
@@ -165,49 +172,29 @@ enum ScrollStitchMatcher {
         return compared > 0
     }
 
-    /// The overlap, trying the most informative column band first.
+    /// The overlap, measured inside iShot's static margins.
     ///
-    /// Order matters. The moving columns are the truest signal; the right-hand
-    /// 70 % is the "content is on the right, a sidebar is on the left" fallback
-    /// for the frames where the moving-column detection says nothing useful
-    /// (a hover highlight that touched the whole window, a gradient); the whole
-    /// row is the last resort.
+    /// Two attempts: the margins taken from the frame pair, then no margins at
+    /// all (a page whose columns all changed — a video, a gradient — has no
+    /// usable margin, and iShot's own guard refuses to compare in that case).
     static func overlapBest(
         existing: ScrollStitcher.SampledRaster,
         next: ScrollStitcher.SampledRaster,
-        movingColumns: [Bool]?,
-        skipTopRows: Int
+        previous: ScrollStitcher.SampledRaster?
     ) -> (overlap: Int, band: String)? {
-        if let movingColumns,
-           let overlap = overlap(
-               existing: existing,
-               next: next,
-               columns: movingColumns,
-               skipTopRows: skipTopRows
-           ) {
-            return (overlap, "moving")
-        }
-        // Right-hand 70 %: a static sidebar is nearly always on the left.
-        let columnCount = min(existing.columnCount, next.columnCount)
-        if columnCount >= 8 {
-            let start = columnCount * 3 / 10
-            var band = [Bool](repeating: false, count: columnCount)
-            for column in start..<columnCount { band[column] = true }
-            if let overlap = overlap(
-                existing: existing,
-                next: next,
-                columns: band,
-                skipTopRows: skipTopRows
-            ) {
-                return (overlap, "right70")
+        if let previous {
+            let margins = staticMargins(previous, next)
+            if margins.left + margins.right < next.columnCount {
+                if let overlap = overlap(
+                    existing: existing,
+                    next: next,
+                    margins: margins
+                ) {
+                    return (overlap, "margins(\(margins.left),\(margins.right))")
+                }
             }
         }
-        if let overlap = overlap(
-            existing: existing,
-            next: next,
-            columns: nil,
-            skipTopRows: skipTopRows
-        ) {
+        if let overlap = overlap(existing: existing, next: next) {
             return (overlap, "whole")
         }
         return nil
@@ -225,22 +212,16 @@ enum ScrollStitchMatcher {
     static func overlap(
         existing: ScrollStitcher.SampledRaster,
         next: ScrollStitcher.SampledRaster,
-        columns only: [Bool]? = nil,
-        skipTopRows: Int = 0
+        margins: (left: Int, right: Int) = (0, 0)
     ) -> Int? {
         let height = min(existing.height, next.height)
         guard height >= minimumOverlap else { return nil }
-        // A window selection starts at the window's top edge, which is a title
-        // bar: those rows are identical in every frame and can never take part in
-        // a displacement. Skipping them is what lets a clicked window stitch at
-        // all — a dragged region normally excludes the bar, which is why this only
-        // showed up on the window path.
-        let skipTop = min(max(0, skipTopRows), max(0, height - minimumOverlap))
+        let skipTop = 0
         let existingSignature = (0..<existing.height).map {
-            rowSignature(existing, y: $0, columns: only)
+            rowSignature(existing, y: $0, margins: margins)
         }
         let nextSignature = (0..<next.height).map {
-            rowSignature(next, y: $0, columns: only)
+            rowSignature(next, y: $0, margins: margins)
         }
 
         var overlap = height
@@ -268,7 +249,7 @@ enum ScrollStitchMatcher {
                     if !rowsMatch(
                         existing, existingStart + offset,
                         next, offset,
-                        columns: only
+                        margins: margins
                     ) {
                         pixelsOK = false
                         break

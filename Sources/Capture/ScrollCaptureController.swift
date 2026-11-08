@@ -140,9 +140,7 @@ struct ScrollAutoStitcher {
         // with that offset, so the long image keeps a continuous sidebar instead
         // of being cropped to the content area. Comparing whole rows is what
         // made a sidebar window refuse to stitch at all.
-        let movingColumns = previous.flatMap {
-            ScrollStitchMatcher.movingColumns($0, sampled)
-        }
+
         // The offset comes from the columns that move, and nothing else. Feeding
         // a measured "pinned rows" count in as a skip turned out to be poison:
         // the count swings between 130 and 600 from frame to frame as ordinary
@@ -152,14 +150,11 @@ struct ScrollAutoStitcher {
         let best = ScrollStitchMatcher.overlapBest(
             existing: store.sampled,
             next: sampled,
-            movingColumns: movingColumns,
-            skipTopRows: 0
+            previous: previous
         )
         let iShotOverlap = best?.overlap
         ScrollDiag.log(
-            "match moving="
-                + "\(movingColumns?.filter { $0 }.count ?? -1)/\(sampled.columnCount) "
-                + "pinnedTop=\(pinnedTop) band=\(best?.band ?? "-") "
+            "match band=\(best?.band ?? "-") "
                 + "overlap=\(iShotOverlap.map(String.init) ?? "nil") "
                 + "stitchH=\(store.height) frameH=\(frame.height)"
         )
@@ -185,7 +180,7 @@ struct ScrollAutoStitcher {
         // evidence: the motion cross-check exists to catch "paper matched paper"
         // on ambiguous frames, and applying it here rejected every good frame
         // because the separate motion estimate kept disagreeing.
-        let confident = best?.band == "moving" && (movingColumns != nil)
+        let confident = best?.band.hasPrefix("margins") == true
         let needsMotionCheck = !confident && (!forward || newRows > frame.height / 2)
         let displacement = needsMotionCheck
             ? previous.flatMap { ScrollStitcher.frameDisplacement(previous: $0, next: sampled) }
