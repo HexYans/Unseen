@@ -2676,10 +2676,6 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             }
             requestCancel("escape")
         case 36, 76:  // return / keypad enter
-            if scrollMode, armedWindowPick != nil || (selectionBorder.hasSelection && !isScrollActive) {
-                beginScrollFromCurrentSelection()
-                return
-            }
             if windowConfirmationOnly {
                 if let hoveredPick {
                     onWindowPicked?(CGWindowID(hoveredPick.candidate.windowNumber), hoveredPick.rect)
@@ -3195,6 +3191,14 @@ final class CaptureOverlayView: NSView, NSTextFieldDelegate {
             return
         }
         armWindow(target, at: point)
+        // Scrolling has no "confirm" step: one click on a window is the whole
+        // gesture, exactly like releasing a drawn box. Asking for a second click
+        // or a Return was one step too many, and it is the step that broke.
+        if scrollMode {
+            selectionBorder.setSelection(target.rect)
+            layoutSelection()
+            beginScrollFromCurrentSelection()
+        }
     }
 
     /// Refresh the window stack, pick at `point`, and write the debug ledger.

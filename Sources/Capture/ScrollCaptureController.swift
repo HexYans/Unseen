@@ -143,11 +143,17 @@ struct ScrollAutoStitcher {
         let movingColumns = previous.flatMap {
             ScrollStitchMatcher.movingColumns($0, sampled)
         }
+        // The offset comes from the columns that move, and nothing else. Feeding
+        // a measured "pinned rows" count in as a skip turned out to be poison:
+        // the count swings between 130 and 600 from frame to frame as ordinary
+        // content happens to line up, and every correct overlap that needed those
+        // rows was thrown away. The user's rule is the right one — read the scroll
+        // offset from the part that scrolls, then append the whole row.
         let best = ScrollStitchMatcher.overlapBest(
             existing: store.sampled,
             next: sampled,
             movingColumns: movingColumns,
-            skipTopRows: pinnedTop
+            skipTopRows: 0
         )
         let iShotOverlap = best?.overlap
         ScrollDiag.log(
@@ -175,7 +181,12 @@ struct ScrollAutoStitcher {
         // paper matched paper and 700 duplicated rows were appended. Confirm
         // those, and every frame that did *not* match, with the frame-to-frame
         // motion, which is independent of the stitch.
-        let needsMotionCheck = !forward || newRows > frame.height / 2
+        // An overlap read from a wide band of genuinely moving columns is direct
+        // evidence: the motion cross-check exists to catch "paper matched paper"
+        // on ambiguous frames, and applying it here rejected every good frame
+        // because the separate motion estimate kept disagreeing.
+        let confident = best?.band == "moving" && (movingColumns != nil)
+        let needsMotionCheck = !confident && (!forward || newRows > frame.height / 2)
         let displacement = needsMotionCheck
             ? previous.flatMap { ScrollStitcher.frameDisplacement(previous: $0, next: sampled) }
             : nil
